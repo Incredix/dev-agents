@@ -32,6 +32,8 @@ kill "$(lsof -ti :8501)"
 
 Then start again (same venv + **`python -m streamlit`** — see **`ui/app.py`** docstring). Tabs: Ollama check, Hello, Plan, Coder. The app loads **`dev-agents/.env`** with **python-dotenv** (still never commit `.env`). In the **Coder** tab, enable **“Verbose step log”** to expand a trace of LangGraph steps after the run completes.
 
+**Patch & PR** tab: **Load diff from last Coder reply** (extracts fenced unified diff), **Dry-run** / **Apply** with GNU **`patch`** (requires **`sudo apt install patch`** on Linux), **Download** `.patch`, and optionally **Create PR** (**`git`** + **`gh`**) with a clean working tree — writes branch → patch → commit → push → **`gh pr create`**.
+
 ### Tailscale (reach the UI from your phone / laptop on the tailnet)
 
 This is separate from Cloudflare tunnels. **Tailscale Serve** publishes your **local** Streamlit port to **`https://<machine>.<tailnet>.ts.net`** for nodes on **your tailnet only** (not the public internet). Your host already runs Tailscale (e.g. **`100.84.61.6`**); use **`tailscale serve status`** after setup to see the exact URL.
@@ -67,7 +69,7 @@ Still treat the UI like an internal admin panel: Tailscale spreads access to any
 **Partly:**
 
 - **`plan`** and **`coder`** help with **architecture, reasoning, grep/read/list**, and drafts of **commands or diffs** — they shorten the iteration loop while you steer.
-- **Built‑in tools are read‑only.** They won’t silently edit repos. Applying changes is **`dev-agents patch-apply`** after you dry‑run (`--apply` when intentional) or Cursor/your IDE.
+- **Built‑in tools are read‑only.** They won’t silently edit repos. Applying changes is the Streamlit **Patch & PR** tab, **`dev-agents patch-apply`** from the CLI after dry‑run (`--apply` when intentional), or Cursor/your IDE.
 - You can extend LangGraph later with richer flows (reviews, scripted tests before patch, MCP, etc.). Today it’s deliberately **assistive**, not autopilot merges.
 
 Updates in the Streamlit tabs appear when **each action finishes** — there is **no SSE push** UI yet for long coder runs beyond the built‑in spinner; you refresh by running again or waiting for completion.

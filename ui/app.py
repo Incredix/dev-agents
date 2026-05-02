@@ -249,6 +249,10 @@ _load_repo_dotenv()
 import streamlit as st  # noqa: E402
 
 st.set_page_config(page_title="dev-agents", layout="wide")
+if "last_coder_reply" not in st.session_state:
+    st.session_state["last_coder_reply"] = ""
+if "patch_text_area" not in st.session_state:
+    st.session_state["patch_text_area"] = ""
 st.title("dev-agents")
 st.caption(
     "LangGraph + Ollama — **`streamlit`** binds to **`127.0.0.1`** by default. "
@@ -388,7 +392,7 @@ with st.expander("Workspace maps — overview & shallow trees", expanded=False):
                 )
                 st.code(body, language="text")
 
-tabs = st.tabs(["Ollama check", "Hello", "Plan", "Coder"])
+tabs = st.tabs(["Ollama check", "Hello", "Plan", "Coder", "Patch & PR"])
 
 
 def _model_arg() -> str | None:
@@ -560,6 +564,8 @@ with tabs[3]:
             if coder_verbose and steps:
                 with st.expander("Coder trace (verbose)", expanded=True):
                     st.code("\n".join(steps), language="text")
+            if (txt or "").strip():
+                st.session_state["last_coder_reply"] = txt
             body = txt or "(empty reply)"
             b = body.strip()
             if b.startswith("{") and "\"name\"" in b and "\"arguments\"" in b:
@@ -573,3 +579,148 @@ with tabs[3]:
                 st.code(body)
             else:
                 st.markdown(body)
+
+with tabs[4]:
+    st.markdown(
+        "Apply a **unified diff** to the **same workspace** as Plan/Coder (GNU **`patch`**). "
+        "Optional: **`gh`** creates a branch, commit, push, and opens a **GitHub PR**."
+    )
+    from datetime import datetime as _dt
+
+    from dev_agents.diff_extract import combine_diff_blocks, extract_diff_blocks
+    from dev_agents.git_pr import apply_patch_commit_push_pr
+    from dev_agents.patch_apply import run_patch
+
+    p_ws = (workspace_abs or "").strip()
+    c_load, c_clear = st.columns(2)
+    with c_load:
+        if st.button("Load diff from last Coder reply", key="patch_load_last"):
+            blocks = extract_diff_blocks(st.session_state.get("last_coder_reply", "") or "")
+            if not blocks:
+                st.warning("No unified diff found — run **Coder** first or paste a diff below.")
+            else:
+                st.session_state["patch_text_area"] = combine_diff_blocks(blocks).decode("utf-8")
+                st.rerun()
+    with c_clear:
+        if st.button("Clear patch text", key="patch_clear"):
+            st.session_state["patch_text_area"] = ""
+            st.rerun()
+
+    patch_txt = st.text_area(
+        "Unified diff (paste or load)",
+        height=220,
+        key="patch_text_area",
+        placeholder="--- a/foo\n+++ b/foo\n@@ ...",
+    )
+    ps_col1, ps_col2, ps_col3 = st.columns(3)
+    with ps_col1:
+        patch_strip = st.number_input("patch -p", min_value=0, max_value=10, value=1)
+    with ps_col2:
+        st.caption(f"Workspace: `{p_ws or '(unset)'}`")
+    with ps_col3:
+        fn = f"dev-agents-{_dt.now().strftime('%Y%m%d-%H%M%S')}.patch"
+        st.download_button(
+            label="Download .patch",
+            data=(patch_txt or "").encode("utf-8"),
+            file_name=fn,
+            mime="text/plain",
+            disabled=not (patch_txt or "").strip(),
+        )
+
+    def _patch_bytes() -> bytes | None:
+        raw = (patch_txt or "").strip()
+        if not raw:
+            st.error("Paste a unified diff or load from Coder.")
+            return None
+        b = raw.encode("utf-8")
+        if not b.endswith(b"\n"):
+            b += b"\n"
+        return b
+
+    st.divider()
+    st.subheader("Apply locally")
+    apply_confirm = st.checkbox(
+        "I want to modify files under the workspace with GNU patch (not dry-run).",
+        value=False,
+        key="patch_apply_confirm",
+    )
+    ac1, ac2 = st.columns(2)
+    with ac1:
+        if st.button("Dry-run patch", key="patch_dry"):
+            data = _patch_bytes()
+            if data is not None:
+                from tempfile import NamedTemporaryFile
+
+                root = Path(p_ws)
+                if not p_ws or not root.is_dir():
+                    st.error("Set a valid workspace root above.")
+                else:
+                    with NamedTemporaryFile(mode="wb", suffix=".patch", delete=False) as tf:
+                        tf.write(data)
+                        tpath = Path(tf.name)
+                    try:
+                        code = run_patch(root, tpath, strip=int(patch_strip), do_apply=False)
+                    finally:
+                        tpath.unlink(missing_ok=True)
+                    if code == 0:
+                        st.success("Dry-run OK — patch would apply.")
+                    else:
+                        st.error("Dry-run failed (see stderr from patch).")
+    with ac2:
+        if st.button("Apply patch", key="patch_apply", disabled=not apply_confirm):
+            data = _patch_bytes()
+            if data is not None:
+                from tempfile import NamedTemporaryFile
+
+                root = Path(p_ws)
+                if not p_ws or not root.is_dir():
+                    st.error("Set a valid workspace root above.")
+                else:
+                    with NamedTemporaryFile(mode="wb", suffix=".patch", delete=False) as tf:
+                        tf.write(data)
+                        tpath = Path(tf.name)
+                    try:
+                        code = run_patch(root, tpath, strip=int(patch_strip), do_apply=True)
+                    finally:
+                        tpath.unlink(missing_ok=True)
+                    if code == 0:
+                        st.success("Applied. Review with **git diff** in that repo.")
+                    else:
+                        st.error("Apply failed.")
+
+    st.divider()
+    st.subheader("GitHub PR (git + gh)")
+    st.caption(
+        "Requires **clean** `git status`, **`gh auth login`**, and **`git push`** access to **origin**. "
+        "Creates a new branch, applies the patch, commits, pushes, runs **`gh pr create`**."
+    )
+    pr_branch = st.text_input("Branch name", value="dev-agents-patch", key="pr_branch")
+    pr_commit = st.text_input("Commit message", value="Apply patch from dev-agents UI", key="pr_commit")
+    pr_title = st.text_input("PR title", value="Patch from dev-agents", key="pr_title")
+    pr_body = st.text_area("PR body", height=100, value="", key="pr_body", placeholder="What changed…")
+    pr_confirm = st.checkbox(
+        "I confirm clean working tree and GitHub CLI auth — create branch, push, open PR.",
+        value=False,
+        key="pr_confirm",
+    )
+    if st.button("Create PR", key="pr_create_btn", disabled=not pr_confirm):
+        data = _patch_bytes()
+        if data is not None:
+            root = Path(p_ws)
+            if not p_ws or not root.is_dir():
+                st.error("Set a valid workspace root above.")
+            else:
+                code, log = apply_patch_commit_push_pr(
+                    root,
+                    data,
+                    branch=pr_branch.strip() or "dev-agents-patch",
+                    commit_message=pr_commit.strip(),
+                    pr_title=pr_title.strip(),
+                    pr_body=pr_body.strip(),
+                    strip=int(patch_strip),
+                )
+                if code == 0:
+                    st.success("Done.")
+                else:
+                    st.error(f"Exit {code}")
+                st.code(log or "(no output)", language="text")
