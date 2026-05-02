@@ -139,10 +139,14 @@ with tabs[3]:
         ),
     )
     if st.button("Run coder", key="coder_btn"):
+        import inspect
         import time
         from pathlib import Path as P
 
         from dev_agents.graphs.coder_react import run_coder
+
+        coder_params = inspect.signature(run_coder).parameters
+        coder_supports_on_step = "on_step" in coder_params
 
         ws = workspace_abs.strip()
         if not ws or not P(ws).is_dir():
@@ -150,6 +154,19 @@ with tabs[3]:
         elif not (instr_c or "").strip():
             st.error("Enter a **Coder instruction** (empty instructions often yield no visible reply).")
         else:
+
+            def _coder_kwargs(on_step_cb=None):
+                kw = dict(
+                    model=_model_arg(),
+                    thread_id=thread_id or "streamlit",
+                    recursion_limit=int(rec_lim),
+                    use_checkpoint=not no_ckpt,
+                    step_log=steps if coder_verbose else None,
+                )
+                if on_step_cb is not None and coder_supports_on_step:
+                    kw["on_step"] = on_step_cb
+                return kw
+
             steps: list[str] = []
             txt = ""
             spinner_msg = (
@@ -159,6 +176,13 @@ with tabs[3]:
             )
             try:
                 if coder_live:
+                    if not coder_supports_on_step:
+                        st.warning(
+                            "Installed **`dev_agents`** package is older than this UI (`run_coder` has no **`on_step`**). "
+                            "Run **`pip install -e .`** from **`dev-agents/`** or **`pip install -U git+…`** so library and "
+                            "**`ui/app.py`** stay in sync, then restart Streamlit. "
+                            "**Live progress will be skipped** for this run."
+                        )
                     st.markdown(spinner_msg)
                     if hasattr(st, "status"):
                         with st.status("Coder agent — live steps", expanded=True) as status:
@@ -173,12 +197,7 @@ with tabs[3]:
                             txt = run_coder(
                                 instr_c,
                                 workspace_root=P(ws),
-                                model=_model_arg(),
-                                thread_id=thread_id or "streamlit",
-                                recursion_limit=int(rec_lim),
-                                use_checkpoint=not no_ckpt,
-                                step_log=steps if coder_verbose else None,
-                                on_step=_on_step,
+                                **_coder_kwargs(_on_step),
                             )
                     else:
                         st.caption(
@@ -188,7 +207,7 @@ with tabs[3]:
                         prog = st.empty()
                         live_buf: list[str] = []
 
-                        def _on_step(i: int, line: str) -> None:
+                        def _on_step_roll(i: int, line: str) -> None:
                             if i < 0:
                                 live_buf.append("finalize · " + line)
                             else:
@@ -198,12 +217,7 @@ with tabs[3]:
                         txt = run_coder(
                             instr_c,
                             workspace_root=P(ws),
-                            model=_model_arg(),
-                            thread_id=thread_id or "streamlit",
-                            recursion_limit=int(rec_lim),
-                            use_checkpoint=not no_ckpt,
-                            step_log=steps if coder_verbose else None,
-                            on_step=_on_step,
+                            **_coder_kwargs(_on_step_roll),
                         )
                 else:
                     st.markdown(spinner_msg)
@@ -211,11 +225,7 @@ with tabs[3]:
                         txt = run_coder(
                             instr_c,
                             workspace_root=P(ws),
-                            model=_model_arg(),
-                            thread_id=thread_id or "streamlit",
-                            recursion_limit=int(rec_lim),
-                            use_checkpoint=not no_ckpt,
-                            step_log=steps if coder_verbose else None,
+                            **_coder_kwargs(None),
                         )
             except Exception as exc:  # noqa: BLE001
                 st.exception(exc)
