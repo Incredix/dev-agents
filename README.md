@@ -11,6 +11,7 @@ LangGraph workflows that talk to **Ollama** over HTTP — plan work, grep/read l
 5. **`dev-agents plan -i "…"`** — one-shot plan; add **`-r path/in/repo.py`** and **`-w /abs/checkout`** when you want a file excerpt wired in.
 6. **`dev-agents coder -i "…" -w /abs/checkout`** — multi-turn **read-only** agent (list / read / grep / `rg`); use **`-m qwen2.5-coder:32b`** (or another coder tag) for better tool adherence. Thread state is persisted under **`DEV_AGENTS_CHECKPOINT_DB`** (see `.env.example`).
 7. **`dev-agents patch-apply`** — **`patch`** dry-run at a checkout root; add **`--apply`** only when you mean to alter files.
+8. **Streamlit UI** (optional): `pip install -e ".[ui]"` then `python -m streamlit run ui/app.py` — same agents plus **Patch & PR**, **live Coder steps**, and **Autopilot** (see below).
 
 ### Optional browser UI (**Streamlit**)
 
@@ -30,15 +31,34 @@ Opens **`http://localhost:8501`** — Streamlit listens on **localhost** only by
 kill "$(lsof -ti :8501)"
 ```
 
-Then start again (same venv + **`python -m streamlit`** — see **`ui/app.py`** docstring). Tabs: Ollama check, Hello, Plan, Coder. The app loads **`dev-agents/.env`** with **python-dotenv** (still never commit `.env`). In the **Coder** tab, enable **“Verbose step log”** to expand a trace of LangGraph steps after the run completes.
+Then start again (same venv + **`python -m streamlit`** — see **`ui/app.py`** docstring). **Tabs:** Ollama check · Hello · Plan · **Coder** · **Patch & PR**. The app loads **`dev-agents/.env`** with **python-dotenv** (still never commit `.env`). In **Coder**, enable **“Verbose step log”** for a LangGraph step trace after the run; enable **“Show live progress”** for **`st.status`** step lines (needs Streamlit ≥ 1.33).
 
-**Patch & PR** tab: **Load diff from last Coder reply** (extracts fenced unified diff), **Dry-run** / **Apply** with GNU **`patch`** (requires **`sudo apt install patch`** on Linux), **Download** `.patch`, and optionally **Create PR** (**`git`** + **`gh`**) with a clean working tree — writes branch → patch → commit → push → **`gh pr create`**.
+**Workspace picker:** when **`AGENT_WORKSPACES`** lists multiple paths, the UI can **auto-pick** a checkout from keywords in Plan/Coder text (toggle in the main column). Override with **Workspace root** if needed — wrong root → grep/list hits the wrong repo.
 
-**Autopilot** (**full mode by default**, driven by env — see **`.env.example`**):
+### Patch & PR tab
 
-- **`DEV_AGENTS_AUTOPILOT`** unset or `1`: maximum autonomy — no sidebar sub-toggles; **after each Coder run**, extract fenced diff → **stash** dirty trees automatically → **patch** → branch/commit/push/**`gh pr create`** (unless **`DEV_AGENTS_AUTOPILOT_LOCAL_ONLY=1`** for workspace-only patch).
-- **`DEV_AGENTS_AUTOPILOT_STASH=0`**: never auto-stash; refuse PR when the repo isn’t clean.
-- **`DEV_AGENTS_AUTOPILOT=0`**: restores the older sidebar checkboxes and confirmation gates on the Patch tab.
+- **Load diff from last Coder reply** — parses fenced **`diff`** blocks from the latest successful Coder output into the text area.
+- **Dry-run** / **Apply** — GNU **`patch`** at the selected workspace (`sudo apt install patch` on Linux). With **Autopilot** off, Apply asks for an explicit checkbox; with Autopilot full mode on, confirmations are skipped (see below).
+- **Download** `.patch` — save for review, email, or CI.
+- **Create PR** — **`git checkout -b`** → apply patch → **`git commit`** → **`git push`** → **`gh pr create`**. Needs **`gh auth login`**, **`origin`**, and push access. If the tree is dirty and **`DEV_AGENTS_AUTOPILOT_STASH`** allows it, **`git stash push -u`** runs first; after PR creation you are returned to the original branch and **`stash pop`** restores local work (see **`git_pr.py`**).
+
+### Autopilot (sidebar + env)
+
+**Full autopilot is the default** (unset **`DEV_AGENTS_AUTOPILOT`** or set it to **`1`**). Then the sidebar hides the old nested toggles; **after each Coder run**, if the reply contains a unified diff, the UI runs the pipeline automatically.
+
+| Env | Meaning |
+|-----|---------|
+| **`DEV_AGENTS_AUTOPILOT`** unset / `1` | Full autopilot (confirmations skipped on Patch tab; chain after Coder when a diff exists). |
+| **`DEV_AGENTS_AUTOPILOT=0`** | Manual mode — sidebar checkboxes and Patch-tab confirmations return. |
+| **`DEV_AGENTS_AUTOPILOT_LOCAL_ONLY=1`** | Only **`patch`** into the workspace — no **`git`** / **`gh`** PR. |
+| **`DEV_AGENTS_AUTOPILOT_STASH=0`** | Do not auto-stash; PR path fails if **`git status`** is not clean. |
+
+**Limits:** Coder tools stay **read-only**; landing changes still requires a **fenced diff** in the model reply (or paste one manually on Patch & PR). No diff → Autopilot does nothing.
+
+### Coder reliability
+
+- **Empty reply retry:** if Ollama returns a blank assistant message (often after a tool round), **`coder_react`** adds one **`HumanMessage`** nudge and invokes the model again before giving up.
+- **Model choice:** coder-tuned models (e.g. **Qwen2.5-Coder**) usually follow JSON tool protocol better than general chat models; use the sidebar **model override** or **`-m`** on the CLI.
 
 ### Tailscale (reach the UI from your phone / laptop on the tailnet)
 
@@ -75,10 +95,9 @@ Still treat the UI like an internal admin panel: Tailscale spreads access to any
 **Partly:**
 
 - **`plan`** and **`coder`** help with **architecture, reasoning, grep/read/list**, and drafts of **commands or diffs** — they shorten the iteration loop while you steer.
-- **Built‑in tools are read‑only.** They won’t silently edit repos. Applying changes is the Streamlit **Patch & PR** tab, **`dev-agents patch-apply`** from the CLI after dry‑run (`--apply` when intentional), or Cursor/your IDE.
-- You can extend LangGraph later with richer flows (reviews, scripted tests before patch, MCP, etc.). Today it’s deliberately **assistive**, not autopilot merges.
+- **Coder tools are read‑only** (list / read / grep / `rg`). Applying patches is separate: Streamlit **Patch & PR**, **`dev-agents patch-apply`**, your IDE, or — when **Autopilot** is on — an automatic chain from Coder output to **`patch`** and optionally **`gh pr create`** (still requires a diff in the reply and your **`git`/`gh`** setup).
 
-Updates in the Streamlit tabs appear when **each action finishes** — there is **no SSE push** UI yet for long coder runs beyond the built‑in spinner; you refresh by running again or waiting for completion.
+Updates in the Streamlit tabs appear when **each action finishes** — there is **no SSE push** UI yet for long coder runs beyond the built‑in spinner and **live step** logs; you wait for completion or run again.
 
 ### Other servers (vanna-api, infra‑db boxes, SSH)
 
@@ -205,6 +224,8 @@ Use `-p` / `--strip` to match paths in the diff (often `1` for git-style).
 | `src/dev_agents/graphs/` | `hello`, `code_plan`, `coder_react` |
 | `src/dev_agents/tools_workspace.py` | Read-only tools bound to one root |
 | `src/dev_agents/patch_apply.py` | `patch` invoke wrapper |
+| `src/dev_agents/diff_extract.py` | Extract unified diffs from markdown / Coder replies |
+| `src/dev_agents/git_pr.py` | Branch → patch → commit → push → **`gh pr create`** (+ optional stash) |
 | `src/dev_agents/cli.py` | `dev-agents` console entry point |
 | `src/dev_agents/workspace.py` | Safe reads under a repo root |
 
