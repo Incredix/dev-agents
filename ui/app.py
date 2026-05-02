@@ -30,6 +30,26 @@ def _load_repo_dotenv() -> None:
         load_dotenv(env_path, override=False)
 
 
+def _agent_workspaces_raw_from_dotenv_file() -> str:
+    """Read AGENT_WORKSPACES from repo .env directly.
+
+    Important: ``load_dotenv(override=False)`` does **not** override variables already set
+    in the parent shell (e.g. export AGENT_WORKSPACES=/tcp-only). Colon-separated
+    multi-repo values in .env were therefore ignored and the picker never appeared.
+    """
+    env_path = _REPO / ".env"
+    if not env_path.is_file():
+        return ""
+    last = ""
+    for line in env_path.read_text(encoding="utf-8", errors="replace").splitlines():
+        s = line.strip()
+        if not s or s.startswith("#"):
+            continue
+        if s.startswith("AGENT_WORKSPACES="):
+            last = s.split("=", 1)[1].strip().strip('"').strip("'")
+    return last
+
+
 def _mask_url(url: str) -> str:
     if not url:
         return "(unset)"
@@ -54,7 +74,8 @@ with st.sidebar:
     st.subheader("Config")
     ost = os.environ.get("OLLAMA_BASE_URL") or "(unset)"
     model_env = os.environ.get("OLLAMA_MODEL") or "(unset)"
-    wsp_raw = os.environ.get("AGENT_WORKSPACES", "").strip()
+    wsp_raw = (_agent_workspaces_raw_from_dotenv_file().strip()
+               or os.environ.get("AGENT_WORKSPACES", "").strip())
     st.text_area(
         "OLLAMA_BASE_URL (masked)",
         _mask_url(ost) if ost != "(unset)" else ost,
@@ -65,8 +86,12 @@ with st.sidebar:
     model_ov = st.text_input("Per-run model override (optional)", value="", placeholder="e.g. qwen2.5-coder:32b")
     # One Streamlit app: switch repo per run. AGENT_WORKSPACES="path1:path2:path3" lists allowed roots.
     _ws_paths = [p.strip() for p in wsp_raw.split(":") if p.strip()]
+    st.caption(
+        f"**AGENT_WORKSPACES** → `{len(_ws_paths)}` path(s) "
+        "(from **`dev-agents/.env`** first, then shell env)."
+    )
     if len(_ws_paths) > 1:
-        st.caption("Multiple repos in **`AGENT_WORKSPACES`** — pick one for Plan/Coder (same app, no second Streamlit).")
+        st.caption("Pick one workspace for Plan/Coder.")
         _picked = st.selectbox("Workspace repo", _ws_paths, key="dev_agents_workspace_pick")
         _override = st.text_input(
             "Override path (optional)",
