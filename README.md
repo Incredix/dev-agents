@@ -16,11 +16,19 @@ LangGraph workflows that talk to **Ollama** over HTTP — plan work, grep/read l
 
 ```bash
 pip install -e ".[ui]"
-cd dev-agents
-streamlit run ui/app.py
+cd dev-agents && source .venv/bin/activate
+python -m streamlit run ui/app.py --server.address 127.0.0.1 --server.port 8501
 ```
 
-Opens **`http://localhost:8501`** — Streamlit listens on **localhost** only by default. Tabs: Ollama check, Hello, Plan, Coder. The app loads **`dev-agents/.env`** with **python-dotenv** (still never commit `.env`). In the **Coder** tab, enable **“Verbose step log”** to expand a trace of LangGraph steps after the run completes.
+Opens **`http://localhost:8501`** — Streamlit listens on **localhost** only by default.
+
+**Two tabs / port 8502?** If **`8501` is already in use**, Streamlit silently binds **`8502`**, **`8503`**, … — usually an **older Streamlit you forgot to stop**, still running stale code. Free the port:
+
+```bash
+kill "$(lsof -ti :8501)"
+```
+
+Then start again (same venv + **`python -m streamlit`** — see **`ui/app.py`** docstring). Tabs: Ollama check, Hello, Plan, Coder. The app loads **`dev-agents/.env`** with **python-dotenv** (still never commit `.env`). In the **Coder** tab, enable **“Verbose step log”** to expand a trace of LangGraph steps after the run completes.
 
 ### Tailscale (reach the UI from your phone / laptop on the tailnet)
 
