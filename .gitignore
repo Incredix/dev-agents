@@ -9,3 +9,7 @@ checkpoints.sqlite*
 .langgraph_api/
 *.egg-info/
 .checkpoints/
+
+# Local Streamlit foreground tests
+.streamlit-nohup.log
+.streamlit-nohup.pid

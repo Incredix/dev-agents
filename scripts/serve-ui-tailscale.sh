@@ -27,7 +27,13 @@ echo "Ensure Streamlit is listening: streamlit run ${ROOT}/ui/app.py --server.ad
 echo >&2
 
 # Proxy local Streamlit (loopback-only) onto the machine's MagicDNS HTTPS URL.
-tailscale serve --bg "${PORT}"
+if ! tailscale serve --bg "${PORT}"; then
+  echo >&2
+  echo "If you saw 'serve config denied', run once:" >&2
+  echo "  sudo tailscale set --operator=\$USER" >&2
+  echo "Then re-run this script, or use: sudo tailscale serve --bg ${PORT}" >&2
+  exit 1
+fi
 
 echo >&2
 echo "Serve status:" >&2

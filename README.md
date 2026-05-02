@@ -39,6 +39,15 @@ scripts/serve-ui-tailscale.sh
 scripts/serve-ui-tailscale.sh off
 ```
 
+**Linux ACL note:** Tailscale Serve may refuse without root until you delegate once:
+
+```bash
+sudo tailscale set --operator="$USER"
+# then `tailscale serve --bg 8501` works without sudo; or keep using sudo for serve
+```
+
+Enable **HTTPS / Serve for your tailnet** in the Tailscale admin console if the CLI prompts you (the message includes a **`login.tailscale.com`** link). **`tailscale serve status`** prints the exact **`https://<machine>…ts.net`** URL for your mesh.
+
 **Do not confuse** **`tailscale serve`** (tailnet-only) with **`tailscale funnel`** (can expose publicly). Prefer **Serve** unless you deliberately want the whole internet to hit Streamlit — which you should not without extra auth layers.
 
 Still treat the UI like an internal admin panel: Tailscale spreads access to anyone on the tailnet ACLs.
