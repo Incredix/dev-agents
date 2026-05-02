@@ -6,6 +6,7 @@ import json
 import os
 import sys
 import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import Annotated, TypedDict
 
@@ -168,6 +169,7 @@ def run_coder(
     use_checkpoint: bool = True,
     verbose: bool = False,
     step_log: list[str] | None = None,
+    on_step: Callable[[int, str], None] | None = None,
 ) -> str:
     tools = build_workspace_tools(workspace_root)
     tool_map = {getattr(t, "name", "?"): t for t in tools}
@@ -233,7 +235,8 @@ def run_coder(
     invoke_cfg: dict = {"recursion_limit": base_limit}
 
     human_only: CoderState = {"messages": [HumanMessage(content=instruction)]}
-    stream_trace = verbose or step_log is not None
+    # Streaming exposes each LangGraph superstep; invoke() is a black box until the graph returns.
+    stream_trace = verbose or step_log is not None or callable(on_step)
 
     def _run(graph) -> dict:
         if not stream_trace:
@@ -245,22 +248,30 @@ def run_coder(
             step_log,
             f"streaming steps (checkpoint={bool(use_checkpoint)} db={ck_info} thread={thread_id!r})",
         )
+        if on_step:
+            on_step(
+                0,
+                "Graph started — **first Ollama call can take tens of seconds** with no interim events.",
+            )
         last: dict | None = None
-        for i, st in enumerate(
+        for i, snapshot in enumerate(
             graph.stream(human_only, invoke_cfg, stream_mode="values"),
             start=1,
         ):
-            last = dict(st)
+            last = dict(snapshot)
             msgs = last.get("messages") or []
             if msgs:
-                _emit_trace(
-                    verbose,
-                    step_log,
-                    f"step {i} messages={len(msgs)} :: {_msg_preview(msgs[-1], 950)}",
-                )
+                line = _msg_preview(msgs[-1], 950)
+                _emit_trace(verbose, step_log, f"step {i} messages={len(msgs)} :: {line}")
+                if on_step:
+                    on_step(i, line)
             else:
                 _emit_trace(verbose, step_log, f"step {i} (empty messages)")
+                if on_step:
+                    on_step(i, "(empty messages)")
         _emit_trace(verbose, step_log, "stream complete.")
+        if on_step:
+            on_step(-1, "Done — assembling final reply.")
         return last if last else {}
 
     if use_checkpoint:

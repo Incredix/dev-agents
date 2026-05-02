@@ -129,7 +129,17 @@ with tabs[3]:
         key="coder_verbose",
         help="Captures LangGraph snapshots after each superstep.",
     )
+    coder_live = st.checkbox(
+        "Show live progress (each graph step)",
+        value=True,
+        key="coder_live",
+        help=(
+            "Streams LangGraph states so you see model vs tool turns. "
+            "Turn off for slightly less overhead — you only get the final spinner/text."
+        ),
+    )
     if st.button("Run coder", key="coder_btn"):
+        import time
         from pathlib import Path as P
 
         from dev_agents.graphs.coder_react import run_coder
@@ -141,20 +151,75 @@ with tabs[3]:
             st.error("Enter a **Coder instruction** (empty instructions often yield no visible reply).")
         else:
             steps: list[str] = []
-            with st.spinner("Coder agent (may take a minute)…"):
-                try:
-                    txt = run_coder(
-                        instr_c,
-                        workspace_root=P(ws),
-                        model=_model_arg(),
-                        thread_id=thread_id or "streamlit",
-                        recursion_limit=int(rec_lim),
-                        use_checkpoint=not no_ckpt,
-                        step_log=steps if coder_verbose else None,
-                    )
-                except Exception as exc:  # noqa: BLE001
-                    st.exception(exc)
-                    txt = ""
+            txt = ""
+            spinner_msg = (
+                "**Behind the scenes:** LangGraph cycles **call_model → (optional) tools → model** …"
+                "\nEach **step** below is one superstep (`model` node or `tools` node)."
+                "\nInside **call_model**, Ollama runs **blocking** until a response — longest silent gap."
+            )
+            try:
+                if coder_live:
+                    st.markdown(spinner_msg)
+                    if hasattr(st, "status"):
+                        with st.status("Coder agent — live steps", expanded=True) as status:
+
+                            def _on_step(i: int, line: str) -> None:
+                                if i < 0:
+                                    status.write(f"**Finalize** · {line}")
+                                    return
+                                ts = time.strftime("%H:%M:%S")
+                                status.write(f"`{ts}` **#{i}** · {line}")
+
+                            txt = run_coder(
+                                instr_c,
+                                workspace_root=P(ws),
+                                model=_model_arg(),
+                                thread_id=thread_id or "streamlit",
+                                recursion_limit=int(rec_lim),
+                                use_checkpoint=not no_ckpt,
+                                step_log=steps if coder_verbose else None,
+                                on_step=_on_step,
+                            )
+                    else:
+                        st.caption(
+                            "Install **`streamlit>=1.33`** for `st.status` UI; "
+                            "showing a rolling log below instead."
+                        )
+                        prog = st.empty()
+                        live_buf: list[str] = []
+
+                        def _on_step(i: int, line: str) -> None:
+                            if i < 0:
+                                live_buf.append("finalize · " + line)
+                            else:
+                                live_buf.append(f"{time.strftime('%H:%M:%S')} #{i} · {line}")
+                            prog.code("\n".join(live_buf[-24:]), language="text")
+
+                        txt = run_coder(
+                            instr_c,
+                            workspace_root=P(ws),
+                            model=_model_arg(),
+                            thread_id=thread_id or "streamlit",
+                            recursion_limit=int(rec_lim),
+                            use_checkpoint=not no_ckpt,
+                            step_log=steps if coder_verbose else None,
+                            on_step=_on_step,
+                        )
+                else:
+                    st.markdown(spinner_msg)
+                    with st.spinner("Coder agent (may take a minute)…"):
+                        txt = run_coder(
+                            instr_c,
+                            workspace_root=P(ws),
+                            model=_model_arg(),
+                            thread_id=thread_id or "streamlit",
+                            recursion_limit=int(rec_lim),
+                            use_checkpoint=not no_ckpt,
+                            step_log=steps if coder_verbose else None,
+                        )
+            except Exception as exc:  # noqa: BLE001
+                st.exception(exc)
+                txt = ""
             if coder_verbose and steps:
                 with st.expander("Coder trace (verbose)", expanded=True):
                     st.code("\n".join(steps), language="text")
