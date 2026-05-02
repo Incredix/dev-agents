@@ -12,7 +12,17 @@ LangGraph workflows that talk to **Ollama** over HTTP — plan work, grep/read l
 6. **`dev-agents coder -i "…" -w /abs/checkout`** — multi-turn **read-only** agent (list / read / grep / `rg`); use **`-m qwen2.5-coder:32b`** (or another coder tag) for better tool adherence. Thread state is persisted under **`DEV_AGENTS_CHECKPOINT_DB`** (see `.env.example`).
 7. **`dev-agents patch-apply`** — **`patch`** dry-run at a checkout root; add **`--apply`** only when you mean to alter files.
 
-Load env with **`set -a && source .env && set +a`** before running commands if your shell doesn’t export those variables yet. Prefer a **small** `dev-agents/.env` instead of **`source`**-ing Django’s `.env` (shell metacharacters in unrelated keys will break sourcing). **`./.env`** is gitignored — never commit it.
+### Optional browser UI (**Streamlit**)
+
+```bash
+pip install -e ".[ui]"
+cd dev-agents
+streamlit run ui/app.py
+```
+
+Opens **`http://localhost:8501`** — Streamlit listens on **localhost** only by default. Tabs: Ollama check, Hello, Plan, Coder. The app loads **`dev-agents/.env`** with **python-dotenv** (still never commit `.env`). If you need this on a LAN, put it behind SSO or a reverse-proxy with auth; plain Streamlit is **not** a public-safe surface.
+
+Load env with **`set -a && source .env && set +a`** before running CLI commands if your shell doesn’t export those variables yet. Prefer a **small** `dev-agents/.env` instead of **`source`**-ing Django’s `.env` (shell metacharacters in unrelated keys will break sourcing). **`./.env`** is gitignored — never commit it.
 
 ## Where this repo lives
 
