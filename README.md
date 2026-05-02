@@ -20,7 +20,50 @@ cd dev-agents
 streamlit run ui/app.py
 ```
 
-Opens **`http://localhost:8501`** — Streamlit listens on **localhost** only by default. Tabs: Ollama check, Hello, Plan, Coder. The app loads **`dev-agents/.env`** with **python-dotenv** (still never commit `.env`). If you need this on a LAN, put it behind SSO or a reverse-proxy with auth; plain Streamlit is **not** a public-safe surface.
+Opens **`http://localhost:8501`** — Streamlit listens on **localhost** only by default. Tabs: Ollama check, Hello, Plan, Coder. The app loads **`dev-agents/.env`** with **python-dotenv** (still never commit `.env`).
+
+### Tailscale (reach the UI from your phone / laptop on the tailnet)
+
+This is separate from Cloudflare tunnels. **Tailscale Serve** publishes your **local** Streamlit port to **`https://<machine>.<tailnet>.ts.net`** for nodes on **your tailnet only** (not the public internet). Your host already runs Tailscale (e.g. **`100.84.61.6`**); use **`tailscale serve status`** after setup to see the exact URL.
+
+```bash
+# Terminal A — bind Streamlit to loopback only (recommended)
+cd dev-agents && source .venv/bin/activate
+streamlit run ui/app.py --server.address 127.0.0.1 --server.port 8501
+
+# Terminal B — HTTPS proxy onto the tailnet (background)
+chmod +x scripts/serve-ui-tailscale.sh
+scripts/serve-ui-tailscale.sh
+
+# Done for the day — remove Serve mapping
+scripts/serve-ui-tailscale.sh off
+```
+
+**Do not confuse** **`tailscale serve`** (tailnet-only) with **`tailscale funnel`** (can expose publicly). Prefer **Serve** unless you deliberately want the whole internet to hit Streamlit — which you should not without extra auth layers.
+
+Still treat the UI like an internal admin panel: Tailscale spreads access to anyone on the tailnet ACLs.
+
+### Does LangGraph “add features” to my codebase?
+
+**Partly:**
+
+- **`plan`** and **`coder`** help with **architecture, reasoning, grep/read/list**, and drafts of **commands or diffs** — they shorten the iteration loop while you steer.
+- **Built‑in tools are read‑only.** They won’t silently edit repos. Applying changes is **`dev-agents patch-apply`** after you dry‑run (`--apply` when intentional) or Cursor/your IDE.
+- You can extend LangGraph later with richer flows (reviews, scripted tests before patch, MCP, etc.). Today it’s deliberately **assistive**, not autopilot merges.
+
+Updates in the Streamlit tabs appear when **each action finishes** — there is **no SSE push** UI yet for long coder runs beyond the built‑in spinner; you refresh by running again or waiting for completion.
+
+### Other servers (vanna-api, infra‑db boxes, SSH)
+
+**Run `dev-agents` where the code lives on disk**, because tools read **`AGENT_WORKSPACES`** paths on **that machine**.
+
+| Situation | What to do |
+|-----------|-------------|
+| **vanna-api** on `192.168.1.29` | SSH in (or Cursor Remote‑SSH). Clone **[Incredix/dev-agents](https://github.com/Incredix/dev-agents)** there once. Set **`dev-agents/.env`**: **`OLLAMA_BASE_URL`** reachable **from that host** (LAN IP or Ollama’s **`100.x` Tailscale** address plus **11434** if your ACLs/firewall allow it), **`AGENT_WORKSPACES`** to its local checkout. Use CLI or **`.[ui]`** plus **`scripts/serve-ui-tailscale.sh`** on that host if you want the browser UI remotely. |
+| **infra‑db host** | Usually only Postgres/Redis — nothing to grep as an app checkout. Agents don’t belong there unless you keep **SQL/schema** repos on that VM. Prefer running agents next to application code repos. |
+| **One laptop, many repos** | Add multiple paths to **`AGENT_WORKSPACES`** (**colon-separated**) when they share a filesystem with that machine — not typical across separate servers; use **one clone per server** instead. |
+
+**Ollama on another tailnet peer:** `OLLAMA_BASE_URL=http://100.x.y.z:11434` works if **Ollama listens on something reachable over Tailscale** (default often loopback‑only — you may bind or proxy carefully; exposing `0.0.0.0:11434` has security implications).
 
 Load env with **`set -a && source .env && set +a`** before running CLI commands if your shell doesn’t export those variables yet. Prefer a **small** `dev-agents/.env` instead of **`source`**-ing Django’s `.env` (shell metacharacters in unrelated keys will break sourcing). **`./.env`** is gitignored — never commit it.
 
@@ -126,6 +169,8 @@ Use `-p` / `--strip` to match paths in the diff (often `1` for git-style).
 
 | Path | Purpose |
 |------|---------|
+| `scripts/serve-ui-tailscale.sh` | **Tailscale Serve** helper for the Streamlit UI |
+| `ui/app.py` | Streamlit tabs (requires `.[ui]`) |
 | `src/dev_agents/config.py` | Env: Ollama URL, model name, workspace paths |
 | `src/dev_agents/chat.py` | Shared `ChatOllama` factory |
 | `src/dev_agents/graphs/` | `hello`, `code_plan`, `coder_react` |
