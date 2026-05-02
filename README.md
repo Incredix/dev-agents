@@ -1,12 +1,22 @@
 # dev-agents
 
-Shared **development** agents: LangGraph + Ollama (e.g. Gemma on a homelab box). This is **not** part of TradeChefPro, vanna-api, or any production Docker stack.
+LangGraph workflows that talk to **Ollama** over HTTP — plan work, grep/read local repos, and (optionally) apply unified diffs. **Not** part of TradeChefPro Django, vanna-api, or prod Docker stacks; keep agents and secrets out of production images.
+
+## How to use this
+
+1. **Install** (once): `cd dev-agents && python3 -m venv .venv && source .venv/bin/activate && pip install -e .`
+2. **Configure**: copy `.env.example` → `.env` and set **`OLLAMA_BASE_URL`**, **`OLLAMA_MODEL`**, **`AGENT_WORKSPACES`** (colon-separated absolute paths to checkouts such as `/…/tcp`).
+3. **`dev-agents ollama-check`** — confirms this machine reaches Ollama and lists pulled models (use your Ollama **LAN** URL if a public hostname does not resolve here).
+4. **`dev-agents hello --topic "smoke"`** — quickest LLM round-trip.
+5. **`dev-agents plan -i "…"`** — one-shot plan; add **`-r path/in/repo.py`** and **`-w /abs/checkout`** when you want a file excerpt wired in.
+6. **`dev-agents coder -i "…" -w /abs/checkout`** — multi-turn **read-only** agent (list / read / grep / `rg`); use **`-m qwen2.5-coder:32b`** (or another coder tag) for better tool adherence. Thread state is persisted under **`DEV_AGENTS_CHECKPOINT_DB`** (see `.env.example`).
+7. **`dev-agents patch-apply`** — **`patch`** dry-run at a checkout root; add **`--apply`** only when you mean to alter files.
+
+Load env with **`set -a && source .env && set +a`** before running commands if your shell doesn’t export those variables yet. Prefer a **small** `dev-agents/.env` instead of **`source`**-ing Django’s `.env` (shell metacharacters in unrelated keys will break sourcing). **`./.env`** is gitignored — never commit it.
 
 ## Where this repo lives
 
-Use **one clone** on the machine where you actually run the agent (your laptop with Cursor, or a dev box with checkouts mounted). Point it at Ollama over the LAN via `OLLAMA_BASE_URL`.
-
-**Same tooling for every app repo:** keep LangGraph code only here; set `AGENT_WORKSPACES` to a colon-separated list of absolute paths (`tcp`, OptionsSignals, etc.).
+Use **one clone** on the machine that runs commands (desktop, `ubuntu-server` over Tailscale, etc.). **Same codebase** drives every app repo via **`AGENT_WORKSPACES`** and **`-w` / `--workspace-index`** overrides.
 
 ## Setup
 
