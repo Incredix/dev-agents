@@ -8,3 +8,4 @@ __pycache__/
 checkpoints.sqlite*
 .langgraph_api/
 *.egg-info/
+.checkpoints/

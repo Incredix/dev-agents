@@ -21,6 +21,7 @@ class CodePlanState(TypedDict, total=False):
     workspace_root_arg: str
     workspace_index: int | None
     read_rel: str | None
+    model_override: str
 
     workspaces_blurb: str
     file_excerpt_label: str
@@ -85,7 +86,8 @@ def _answer(state: CodePlanState) -> CodePlanState:
             ]
         )
 
-    llm = make_chat_model()
+    mo = (state.get("model_override") or "").strip()
+    llm = make_chat_model(**({"model": mo} if mo else {}))
     msg = llm.invoke(
         [
             SystemMessage(content=_SYSTEM),
@@ -112,6 +114,7 @@ def run(
     read_rel: str | None = None,
     workspace_root: str | None = None,
     workspace_index: int | None = None,
+    model: str | None = None,
 ) -> CodePlanState:
     graph = build_graph()
     payload: CodePlanState = {"instruction": instruction}
@@ -121,4 +124,6 @@ def run(
         payload["workspace_root_arg"] = workspace_root
     if workspace_index is not None:
         payload["workspace_index"] = workspace_index
+    if model:
+        payload["model_override"] = model
     return graph.invoke(payload)

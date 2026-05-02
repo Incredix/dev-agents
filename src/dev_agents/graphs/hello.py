@@ -10,10 +10,12 @@ from dev_agents.chat import make_chat_model
 class HelloState(TypedDict, total=False):
     topic: str
     reply: str
+    model_override: str
 
 
 def _draft(state: HelloState) -> HelloState:
-    llm = make_chat_model()
+    mo = (state.get("model_override") or "").strip()
+    llm = make_chat_model(**({"model": mo} if mo else {}))
     topic = state.get("topic") or "your homelab"
     msg = llm.invoke(f"Say one short sentence about {topic}.")
     return {"reply": getattr(msg, "content", str(msg))}
@@ -27,6 +29,9 @@ def build_graph():
     return g.compile()
 
 
-def run(topic: str | None = None) -> HelloState:
+def run(topic: str | None = None, *, model: str | None = None) -> HelloState:
     graph = build_graph()
-    return graph.invoke({"topic": topic or ""})
+    payload: HelloState = {"topic": topic or ""}
+    if model:
+        payload["model_override"] = model
+    return graph.invoke(payload)

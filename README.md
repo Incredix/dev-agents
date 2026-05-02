@@ -6,7 +6,7 @@ Shared **development** agents: LangGraph + Ollama (e.g. Gemma on a homelab box).
 
 Use **one clone** on the machine where you actually run the agent (your laptop with Cursor, or a dev box with checkouts mounted). Point it at Ollama over the LAN via `OLLAMA_BASE_URL`.
 
-**Same tooling for every app repo:** keep LangGraph code only here; set `AGENT_WORKSPACES` to a colon-separated list of absolute paths (`tcp`, OptionsSignals, etc.). Add file/subprocess tools in graphs as needed—they read those paths.
+**Same tooling for every app repo:** keep LangGraph code only here; set `AGENT_WORKSPACES` to a colon-separated list of absolute paths (`tcp`, OptionsSignals, etc.).
 
 ## Setup
 
@@ -39,6 +39,18 @@ dev-agents ollama-check
 
 The `ollama-check` command uses the same env and prints model names or the same troubleshooting text.
 
+## Commands
+
+| Command | Purpose |
+|--------|---------|
+| `hello` | One-shot LLM smoke test |
+| `plan` | Static context (optional file excerpt) + plan |
+| `coder` | Multi-step **read-only** exploration (list / read / grep / `rg`) with SQLite checkpoints |
+| `patch-apply` | GNU `patch` dry-run (default); `--apply` writes files |
+| `ollama-check` | `GET /api/tags` |
+
+Use `--model`/`-m` on `hello`, `plan`, and `coder` to override `OLLAMA_MODEL` per run (Qwen coder tags work well for `coder`).
+
 ## Run the example graph
 
 ```bash
@@ -49,8 +61,6 @@ dev-agents hello --topic "LangGraph on a homelab"
 
 ### Plan an iteration (workspace + optional file excerpt)
 
-Point `AGENT_WORKSPACES` at your checkouts (colon-separated), then:
-
 ```bash
 set -a && source .env && set +a
 dev-agents plan -i "Refactor trades API error handling to return JSON errors" \
@@ -59,7 +69,38 @@ dev-agents plan -i "Refactor trades API error handling to return JSON errors" \
 ```
 
 If `AGENT_WORKSPACES` already includes `tcp`, you can omit `-w` and use `--workspace-index` when you have several roots.
-For coding-heavy prompts, set `OLLAMA_MODEL` to a Qwen coder tag in `.env` for that session.
+
+### Coder (tools + checkpoints)
+
+The `coder` graph calls Ollama repeatedly: the model emits JSON tool calls (Ollama-compatible), tools run on disk, then the model answers. **No writes** — read-only tools only.
+
+```bash
+set -a && source .env && set +a
+dev-agents coder -i "How does /trades/api/ideas/ gate Pro CSV export?" \
+  -w /home/you/code/tradechefpro/tcp \
+  -m qwen2.5-coder:32b \
+  --thread-id mysession
+```
+
+- **Checkpoints:** SQLite at `DEV_AGENTS_CHECKPOINT_DB` (default `.checkpoints/checkpoints.sqlite` under your current working directory). Run from `dev-agents/` or set an absolute path.
+- **`--no-checkpoint`:** ephemeral run.
+- **`GNU patch`** (for `patch-apply`): install with `sudo apt install patch` if missing.
+
+### Apply a unified diff (careful)
+
+Dry-run (default):
+
+```bash
+dev-agents patch-apply -w /home/you/code/tradechefpro/tcp /path/to/changes.diff
+```
+
+Apply:
+
+```bash
+dev-agents patch-apply --apply -w /home/you/code/tradechefpro/tcp /path/to/changes.diff
+```
+
+Use `-p` / `--strip` to match paths in the diff (often `1` for git-style).
 
 ## Layout
 
@@ -67,22 +108,18 @@ For coding-heavy prompts, set `OLLAMA_MODEL` to a Qwen coder tag in `.env` for t
 |------|---------|
 | `src/dev_agents/config.py` | Env: Ollama URL, model name, workspace paths |
 | `src/dev_agents/chat.py` | Shared `ChatOllama` factory |
-| `src/dev_agents/graphs/` | One module per workflow (`hello`, `code_plan`) |
+| `src/dev_agents/graphs/` | `hello`, `code_plan`, `coder_react` |
+| `src/dev_agents/tools_workspace.py` | Read-only tools bound to one root |
+| `src/dev_agents/patch_apply.py` | `patch` invoke wrapper |
 | `src/dev_agents/cli.py` | `dev-agents` console entry point |
 | `src/dev_agents/workspace.py` | Safe reads under a repo root |
 
 ## Git
 
-Initialize or add your own remote (this folder is intentionally **outside** `tcp/`):
-
-```bash
-cd dev-agents
-git init
-git add .
-git commit -m "Initial dev-agents scaffolding"
-```
+This folder is intentionally **outside** `tcp/`. Add your own remote as needed.
 
 ## Notes
 
-- **Do not** add this repo to production compose on `.111` / vanna-api unless you are shipping a real product feature.
-- For persistent LangGraph checkpoints, add a saver (e.g. SQLite or Postgres) in a graph module when you need multi-step durability.
+- **Do not** add this repo to production compose on the TCP / vanna-api hosts unless you are shipping a real product feature.
+- **Do not** `source` the full `tcp/.env` into bash for Django secrets if values contain `)`, `*`, etc. — keep a small `dev-agents/.env` for `OLLAMA_*` and `AGENT_WORKSPACES` only.
+- For coding agents, **Qwen coder** models in Ollama often outperform Gemma on multi-step tool workflows; try `-m qwen2.5-coder:32b` for `coder`.
