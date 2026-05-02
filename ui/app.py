@@ -1,8 +1,13 @@
 """
 Minimal browser UI for dev-agents (localhost — do not expose without auth).
 
+  cd dev-agents && source .venv/bin/activate
   pip install -e ".[ui]"
-  cd dev-agents && streamlit run ui/app.py
+  python -m streamlit run ui/app.py
+
+Use **`python -m streamlit`** from the **same venv** as **`pip install -e .`**. A global
+**`streamlit`** on PATH often points at another Python and loads an older **`dev_agents`**
+(so **`run_coder(on_step=...)`** disappears and live progress warns).
 """
 
 from __future__ import annotations
@@ -60,6 +65,29 @@ with st.sidebar:
     default_w = wsp_raw.split(":")[0].strip() if wsp_raw else ""
     model_ov = st.text_input("Per-run model override (optional)", value="", placeholder="e.g. qwen2.5-coder:32b")
     workspace_abs = st.text_input("Workspace root (-w)", value=default_w, placeholder="/abs/path/to/tcp")
+
+    import inspect as _inspect
+    import sys as _sys
+
+    import dev_agents as _dev_agents
+    from dev_agents.graphs.coder_react import run_coder as _run_coder_for_probe
+
+    _has_on_step = "on_step" in _inspect.signature(_run_coder_for_probe).parameters
+    with st.expander("Python / dev_agents (diagnostics)", expanded=not _has_on_step):
+        st.code(
+            f"sys.executable:\n{_sys.executable}\n\n"
+            f"dev_agents:\n{_dev_agents.__file__}\n\n"
+            f"run_coder has on_step: {_has_on_step}\n",
+            language="text",
+        )
+        if not _has_on_step:
+            st.warning(
+                "Live Coder steps need **`on_step`** on **`run_coder`**. "
+                "Your **Streamlit process** is loading an old **`dev_agents`**. "
+                "From **this repo**: activate the venv, **`pip install -e .`**, then run "
+                "**`python -m streamlit run ui/app.py`** (not a random **`streamlit`** on PATH)."
+            )
+
 
 tabs = st.tabs(["Ollama check", "Hello", "Plan", "Coder"])
 
