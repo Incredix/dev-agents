@@ -34,6 +34,8 @@ Then start again (same venv + **`python -m streamlit`** — see **`ui/app.py`** 
 
 **Patch & PR** tab: **Load diff from last Coder reply** (extracts fenced unified diff), **Dry-run** / **Apply** with GNU **`patch`** (requires **`sudo apt install patch`** on Linux), **Download** `.patch`, and optionally **Create PR** (**`git`** + **`gh`**) with a clean working tree — writes branch → patch → commit → push → **`gh pr create`**.
 
+**Autopilot** (sidebar, **on by default**): skips Patch-tab confirmation checkboxes; **after each successful Coder run**, extracts a fenced unified diff from the reply and either **applies it locally** or runs the full **git → push → `gh pr create`** flow (requires clean tree + **`gh auth`**). Disable Autopilot in the sidebar if you want review gates back.
+
 ### Tailscale (reach the UI from your phone / laptop on the tailnet)
 
 This is separate from Cloudflare tunnels. **Tailscale Serve** publishes your **local** Streamlit port to **`https://<machine>.<tailnet>.ts.net`** for nodes on **your tailnet only** (not the public internet). Your host already runs Tailscale (e.g. **`100.84.61.6`**); use **`tailscale serve status`** after setup to see the exact URL.

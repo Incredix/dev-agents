@@ -253,6 +253,68 @@ if "last_coder_reply" not in st.session_state:
     st.session_state["last_coder_reply"] = ""
 if "patch_text_area" not in st.session_state:
     st.session_state["patch_text_area"] = ""
+
+
+def _autopilot_from_coder(
+    reply: str,
+    workspace: str,
+    *,
+    strip: int,
+    open_pr: bool,
+    instruction: str,
+) -> None:
+    """Extract unified diff from Coder reply → patch apply and/or gh PR."""
+    from datetime import datetime as _adt
+    from pathlib import Path
+    from tempfile import NamedTemporaryFile
+
+    from dev_agents.diff_extract import combine_diff_blocks, extract_diff_blocks
+    from dev_agents.git_pr import apply_patch_commit_push_pr
+    from dev_agents.patch_apply import run_patch
+
+    root = Path((workspace or "").strip())
+    if not root.is_dir():
+        st.error("Autopilot: workspace path is not a directory.")
+        return
+    blocks = extract_diff_blocks(reply)
+    if not blocks:
+        return
+    data = combine_diff_blocks(blocks)
+    hint = ((instruction or "autopilot").strip()[:72] or "autopilot").replace("\n", " ")
+    branch = f"agent-{_adt.now().strftime('%Y%m%d-%H%M%S')}"
+    st.session_state["patch_text_area"] = data.decode("utf-8", errors="replace")
+
+    with st.expander("Autopilot — patch → repo", expanded=True):
+        st.caption(f"`{branch}` · patch **-p{strip}** · {'PR (git+gh)' if open_pr else 'local patch only'}")
+        if open_pr:
+            code, log = apply_patch_commit_push_pr(
+                root,
+                data,
+                branch=branch,
+                commit_message=f"autopilot: {hint}",
+                pr_title=f"autopilot: {hint}",
+                pr_body="Opened by dev-agents Autopilot (Coder → diff → gh).\n\n_(Review before merge.)_",
+                strip=strip,
+            )
+            st.code(log or "(no output)", language="text")
+            if code == 0:
+                st.success("Autopilot finished (exit 0). Check GitHub for the PR.")
+            else:
+                st.error(f"Autopilot PR path failed (exit {code}). Fix git/gh auth or use local patch only.")
+        else:
+            with NamedTemporaryFile(mode="wb", suffix=".patch", delete=False) as tf:
+                tf.write(data)
+                tpath = Path(tf.name)
+            try:
+                code = run_patch(root, tpath, strip=strip, do_apply=True)
+            finally:
+                tpath.unlink(missing_ok=True)
+            if code == 0:
+                st.success("Autopilot: patch applied (no PR). Review with git diff.")
+            else:
+                st.error("Autopilot: patch apply failed — try Dry-run on the Patch tab.")
+
+
 st.title("dev-agents")
 st.caption(
     "LangGraph + Ollama — **`streamlit`** binds to **`127.0.0.1`** by default. "
@@ -273,6 +335,35 @@ with st.sidebar:
     )
     st.text_input("OLLAMA_MODEL (from env)", value=model_env, disabled=True)
     model_ov = st.text_input("Per-run model override (optional)", value="", placeholder="e.g. qwen2.5-coder:32b")
+    st.subheader("Autopilot")
+    autopilot_enabled = st.checkbox(
+        "Autopilot",
+        value=True,
+        key="sidebar_autopilot",
+        help="Skip Patch-tab confirmations; after Coder, auto extract fenced unified diff → apply or open PR.",
+    )
+    autopilot_after_coder = st.checkbox(
+        "After Coder → apply diff (+ PR)",
+        value=True,
+        key="sidebar_autopilot_chain",
+        disabled=not autopilot_enabled,
+        help="When Coder returns a fenced unified diff, run patch / gh automatically.",
+    )
+    autopilot_open_pr = st.checkbox(
+        "Use GitHub PR (git+gh)",
+        value=True,
+        key="sidebar_autopilot_pr",
+        disabled=not autopilot_enabled or not autopilot_after_coder,
+        help="If off: only GNU patch into workspace (no branch/push). If on: requires clean tree + gh auth.",
+    )
+    autopilot_strip = st.number_input(
+        "Autopilot patch -p",
+        min_value=0,
+        max_value=10,
+        value=1,
+        key="sidebar_autopilot_strip",
+        disabled=not autopilot_enabled,
+    )
     _ws_paths = [p.strip() for p in wsp_raw.split(":") if p.strip()]
     st.caption(
         f"**AGENT_WORKSPACES**: `{len(_ws_paths)}` path(s); workspace picker is **below** (routing + auto-pick)."
@@ -580,6 +671,19 @@ with tabs[3]:
             else:
                 st.markdown(body)
 
+            if (
+                autopilot_enabled
+                and autopilot_after_coder
+                and (txt or "").strip()
+            ):
+                _autopilot_from_coder(
+                    txt,
+                    ws,
+                    strip=int(autopilot_strip),
+                    open_pr=autopilot_open_pr,
+                    instruction=instr_c or "",
+                )
+
 with tabs[4]:
     st.markdown(
         "Apply a **unified diff** to the **same workspace** as Plan/Coder (GNU **`patch`**). "
@@ -639,11 +743,15 @@ with tabs[4]:
 
     st.divider()
     st.subheader("Apply locally")
-    apply_confirm = st.checkbox(
-        "I want to modify files under the workspace with GNU patch (not dry-run).",
-        value=False,
-        key="patch_apply_confirm",
-    )
+    if autopilot_enabled:
+        st.caption("Autopilot on — **Apply** is one click (no safety checkbox).")
+        apply_confirm = True
+    else:
+        apply_confirm = st.checkbox(
+            "I want to modify files under the workspace with GNU patch (not dry-run).",
+            value=False,
+            key="patch_apply_confirm",
+        )
     ac1, ac2 = st.columns(2)
     with ac1:
         if st.button("Dry-run patch", key="patch_dry"):
@@ -698,11 +806,15 @@ with tabs[4]:
     pr_commit = st.text_input("Commit message", value="Apply patch from dev-agents UI", key="pr_commit")
     pr_title = st.text_input("PR title", value="Patch from dev-agents", key="pr_title")
     pr_body = st.text_area("PR body", height=100, value="", key="pr_body", placeholder="What changed…")
-    pr_confirm = st.checkbox(
-        "I confirm clean working tree and GitHub CLI auth — create branch, push, open PR.",
-        value=False,
-        key="pr_confirm",
-    )
+    if autopilot_enabled:
+        st.caption("Autopilot on — **Create PR** is one click.")
+        pr_confirm = True
+    else:
+        pr_confirm = st.checkbox(
+            "I confirm clean working tree and GitHub CLI auth — create branch, push, open PR.",
+            value=False,
+            key="pr_confirm",
+        )
     if st.button("Create PR", key="pr_create_btn", disabled=not pr_confirm):
         data = _patch_bytes()
         if data is not None:
