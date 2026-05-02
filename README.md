@@ -28,6 +28,17 @@ curl -sS "${OLLAMA_BASE_URL:-http://127.0.0.1:11434}/api/tags" | python3 -c \
 
 (No `jq` needed; use `sudo apt install jq` only if you prefer `jq '.models[].name'`.)
 
+### `Name or service not known` / `Errno -2`
+
+Your **public** Ollama hostname may resolve only on networks that see the same DNS records (or only from Cloudflare proxy paths). Many **inside-LAN Ubuntu boxes** cannot resolve `ollama.tradechefpro.com`. Use a URL that resolves there:
+
+```bash
+export OLLAMA_BASE_URL=http://<ollama-box-lan-ip>:11434
+dev-agents ollama-check
+```
+
+The `ollama-check` command uses the same env and prints model names or the same troubleshooting text.
+
 ## Run the example graph
 
 ```bash

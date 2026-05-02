@@ -5,6 +5,14 @@ from __future__ import annotations
 import argparse
 import sys
 
+import httpx
+
+
+def cmd_ollama_check(ns: argparse.Namespace) -> int:
+    from dev_agents.ollama_net import check_ollama_tags
+
+    return check_ollama_tags(ns.url)
+
 
 def cmd_hello(ns: argparse.Namespace) -> int:
     from dev_agents.graphs.hello import run
@@ -70,12 +78,31 @@ def main(argv: list[str] | None = None) -> int:
     )
     pp.set_defaults(_run=cmd_plan)
 
+    pc = sub.add_parser(
+        "ollama-check",
+        help="GET /api/tags against OLLAMA_BASE_URL — useful when hello/plan fail with DNS errors",
+    )
+    pc.add_argument(
+        "--url",
+        default=None,
+        metavar="BASE",
+        help="Override env (same format as OLLAMA_BASE_URL, e.g. http://192.168.1.10:11434)",
+    )
+    pc.set_defaults(_run=cmd_ollama_check)
+
     ns = p.parse_args(argv)
     runner = getattr(ns, "_run", None)
     if runner is None:
         p.print_help()
         return 2
-    return runner(ns)
+    try:
+        return runner(ns)
+    except httpx.ConnectError as e:
+        from dev_agents.config import ollama_base_url
+        from dev_agents.ollama_net import troubleshooting_block
+
+        print(troubleshooting_block(ollama_base_url(), e), file=sys.stderr)
+        return 3
 
 
 if __name__ == "__main__":
