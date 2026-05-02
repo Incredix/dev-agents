@@ -22,8 +22,11 @@ cp .env.example .env
 Sanity check Ollama from this host:
 
 ```bash
-curl -s "${OLLAMA_BASE_URL:-http://127.0.0.1:11434}/api/tags" | head
+curl -sS "${OLLAMA_BASE_URL:-http://127.0.0.1:11434}/api/tags" | python3 -c \
+  'import sys,json; print("\n".join(m["name"] for m in json.load(sys.stdin).get("models", [])))'
 ```
+
+(No `jq` needed; use `sudo apt install jq` only if you prefer `jq '.models[].name'`.)
 
 ## Run the example graph
 
