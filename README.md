@@ -34,7 +34,11 @@ Then start again (same venv + **`python -m streamlit`** — see **`ui/app.py`** 
 
 **Patch & PR** tab: **Load diff from last Coder reply** (extracts fenced unified diff), **Dry-run** / **Apply** with GNU **`patch`** (requires **`sudo apt install patch`** on Linux), **Download** `.patch`, and optionally **Create PR** (**`git`** + **`gh`**) with a clean working tree — writes branch → patch → commit → push → **`gh pr create`**.
 
-**Autopilot** (sidebar, **on by default**): skips Patch-tab confirmation checkboxes; **after each successful Coder run**, extracts a fenced unified diff from the reply and either **applies it locally** or runs the full **git → push → `gh pr create`** flow (requires clean tree + **`gh auth`**). Disable Autopilot in the sidebar if you want review gates back.
+**Autopilot** (**full mode by default**, driven by env — see **`.env.example`**):
+
+- **`DEV_AGENTS_AUTOPILOT`** unset or `1`: maximum autonomy — no sidebar sub-toggles; **after each Coder run**, extract fenced diff → **stash** dirty trees automatically → **patch** → branch/commit/push/**`gh pr create`** (unless **`DEV_AGENTS_AUTOPILOT_LOCAL_ONLY=1`** for workspace-only patch).
+- **`DEV_AGENTS_AUTOPILOT_STASH=0`**: never auto-stash; refuse PR when the repo isn’t clean.
+- **`DEV_AGENTS_AUTOPILOT=0`**: restores the older sidebar checkboxes and confirmation gates on the Patch tab.
 
 ### Tailscale (reach the UI from your phone / laptop on the tailnet)
 

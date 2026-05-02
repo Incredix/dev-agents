@@ -20,6 +20,14 @@ from pathlib import Path
 _REPO = Path(__file__).resolve().parent.parent
 
 
+def _env_enabled(key: str, *, default: bool) -> bool:
+    """True unless env is set to 0/false/no/off (case-insensitive)."""
+    raw = os.environ.get(key)
+    if raw is None or str(raw).strip() == "":
+        return default
+    return str(raw).strip().lower() not in ("0", "false", "no", "off")
+
+
 def _load_repo_dotenv() -> None:
     try:
         from dotenv import load_dotenv
@@ -262,6 +270,7 @@ def _autopilot_from_coder(
     strip: int,
     open_pr: bool,
     instruction: str,
+    stash_if_dirty: bool,
 ) -> None:
     """Extract unified diff from Coder reply → patch apply and/or gh PR."""
     from datetime import datetime as _adt
@@ -295,6 +304,7 @@ def _autopilot_from_coder(
                 pr_title=f"autopilot: {hint}",
                 pr_body="Opened by dev-agents Autopilot (Coder → diff → gh).\n\n_(Review before merge.)_",
                 strip=strip,
+                stash_if_dirty=stash_if_dirty,
             )
             st.code(log or "(no output)", language="text")
             if code == 0:
@@ -336,34 +346,55 @@ with st.sidebar:
     st.text_input("OLLAMA_MODEL (from env)", value=model_env, disabled=True)
     model_ov = st.text_input("Per-run model override (optional)", value="", placeholder="e.g. qwen2.5-coder:32b")
     st.subheader("Autopilot")
-    autopilot_enabled = st.checkbox(
-        "Autopilot",
-        value=True,
-        key="sidebar_autopilot",
-        help="Skip Patch-tab confirmations; after Coder, auto extract fenced unified diff → apply or open PR.",
-    )
-    autopilot_after_coder = st.checkbox(
-        "After Coder → apply diff (+ PR)",
-        value=True,
-        key="sidebar_autopilot_chain",
-        disabled=not autopilot_enabled,
-        help="When Coder returns a fenced unified diff, run patch / gh automatically.",
-    )
-    autopilot_open_pr = st.checkbox(
-        "Use GitHub PR (git+gh)",
-        value=True,
-        key="sidebar_autopilot_pr",
-        disabled=not autopilot_enabled or not autopilot_after_coder,
-        help="If off: only GNU patch into workspace (no branch/push). If on: requires clean tree + gh auth.",
-    )
-    autopilot_strip = st.number_input(
-        "Autopilot patch -p",
-        min_value=0,
-        max_value=10,
-        value=1,
-        key="sidebar_autopilot_strip",
-        disabled=not autopilot_enabled,
-    )
+    full_autopilot = _env_enabled("DEV_AGENTS_AUTOPILOT", default=True)
+    if full_autopilot:
+        st.success(
+            "Full autopilot — Coder→diff→stash if needed→apply/PR. "
+            "`DEV_AGENTS_AUTOPILOT=0` restores manual checkboxes."
+        )
+        st.caption(
+            "`DEV_AGENTS_AUTOPILOT_LOCAL_ONLY=1` → workspace patch only (no git/gh). "
+            "`DEV_AGENTS_AUTOPILOT_STASH=0` → abort if repo is dirty (no auto-stash)."
+        )
+        autopilot_enabled = True
+        autopilot_after_coder = True
+        autopilot_open_pr = not _env_enabled("DEV_AGENTS_AUTOPILOT_LOCAL_ONLY", default=False)
+        autopilot_strip = st.number_input(
+            "Autopilot patch -p",
+            min_value=0,
+            max_value=10,
+            value=1,
+            key="sidebar_autopilot_strip",
+        )
+    else:
+        autopilot_enabled = st.checkbox(
+            "Autopilot",
+            value=False,
+            key="sidebar_autopilot",
+            help="Skip Patch-tab confirmations; after Coder, auto extract fenced unified diff → apply or open PR.",
+        )
+        autopilot_after_coder = st.checkbox(
+            "After Coder → apply diff (+ PR)",
+            value=True,
+            key="sidebar_autopilot_chain",
+            disabled=not autopilot_enabled,
+            help="When Coder returns a fenced unified diff, run patch / gh automatically.",
+        )
+        autopilot_open_pr = st.checkbox(
+            "Use GitHub PR (git+gh)",
+            value=True,
+            key="sidebar_autopilot_pr",
+            disabled=not autopilot_enabled or not autopilot_after_coder,
+            help="If off: only GNU patch into workspace (no branch/push). If on: requires clean tree + gh auth.",
+        )
+        autopilot_strip = st.number_input(
+            "Autopilot patch -p",
+            min_value=0,
+            max_value=10,
+            value=1,
+            key="sidebar_autopilot_strip",
+            disabled=not autopilot_enabled,
+        )
     _ws_paths = [p.strip() for p in wsp_raw.split(":") if p.strip()]
     st.caption(
         f"**AGENT_WORKSPACES**: `{len(_ws_paths)}` path(s); workspace picker is **below** (routing + auto-pick)."
@@ -682,6 +713,7 @@ with tabs[3]:
                     strip=int(autopilot_strip),
                     open_pr=autopilot_open_pr,
                     instruction=instr_c or "",
+                    stash_if_dirty=_env_enabled("DEV_AGENTS_AUTOPILOT_STASH", default=True),
                 )
 
 with tabs[4]:
@@ -799,8 +831,8 @@ with tabs[4]:
     st.divider()
     st.subheader("GitHub PR (git + gh)")
     st.caption(
-        "Requires **clean** `git status`, **`gh auth login`**, and **`git push`** access to **origin**. "
-        "Creates a new branch, applies the patch, commits, pushes, runs **`gh pr create`**."
+        "Requires **`gh auth login`**, **`git push`** to **origin**. "
+        "Dirty tree: auto **`git stash`** before branching when **`DEV_AGENTS_AUTOPILOT_STASH`** is unset or 1."
     )
     pr_branch = st.text_input("Branch name", value="dev-agents-patch", key="pr_branch")
     pr_commit = st.text_input("Commit message", value="Apply patch from dev-agents UI", key="pr_commit")
@@ -830,6 +862,7 @@ with tabs[4]:
                     pr_title=pr_title.strip(),
                     pr_body=pr_body.strip(),
                     strip=int(patch_strip),
+                    stash_if_dirty=_env_enabled("DEV_AGENTS_AUTOPILOT_STASH", default=True),
                 )
                 if code == 0:
                     st.success("Done.")

@@ -5,7 +5,6 @@ from __future__ import annotations
 import re
 import shutil
 import subprocess
-import tempfile
 from pathlib import Path
 
 
@@ -58,8 +57,13 @@ def apply_patch_commit_push_pr(
     pr_title: str,
     pr_body: str,
     strip: int = 1,
+    stash_if_dirty: bool = False,
 ) -> tuple[int, str]:
-    """Apply patch in ``workspace``, commit, push, ``gh pr create``. Logs returned as text."""
+    """Apply patch in ``workspace``, commit, push, ``gh pr create``. Logs returned as text.
+
+    If ``stash_if_dirty`` is True and the tree has local changes, runs ``git stash push -u``
+    before branching; on success returns to the original branch and ``stash pop``.
+    """
     logs: list[str] = []
     if not shutil.which("git"):
         return 1, "git not found on PATH"
@@ -72,16 +76,47 @@ def apply_patch_commit_push_pr(
     if repo is None:
         return 2, f"Not a git repository (from {workspace})"
 
+    code0, orig_br_out = _run(["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=repo)
+    if code0 != 0:
+        return 2, f"git rev-parse failed:\n{orig_br_out}"
+    original_branch = orig_br_out.strip().splitlines()[-1].strip()
+
+    stashed = False
+
+    def unwind_local_branch_and_stash() -> None:
+        """Return to original branch, delete feature branch, restore stash."""
+        _run(["git", "checkout", original_branch], cwd=repo)
+        _run(["git", "branch", "-D", branch_safe], cwd=repo)
+        if stashed:
+            _, pop_out = _run(["git", "stash", "pop"], cwd=repo)
+            logs.append(f"\nstash pop:\n{pop_out}")
+
     ok, st = working_tree_clean(repo)
     if not ok:
-        return 3, (
-            "Working tree is not clean; commit or stash first.\n"
-            f"git status --porcelain:\n{st}"
-        )
+        if stash_if_dirty:
+            code_st, stash_out = _run(
+                ["git", "stash", "push", "-u", "-m", "dev-agents autopilot"],
+                cwd=repo,
+            )
+            logs.append(f"stash (dirty tree):\n{stash_out}")
+            if code_st != 0:
+                return 3, "\n".join(logs)
+            stashed = True
+            ok, st = working_tree_clean(repo)
+        if not ok:
+            extra = "\n".join(logs) + "\n" if logs else ""
+            return 3, (
+                extra
+                + "Working tree is not clean; commit or stash first.\n"
+                + f"git status --porcelain:\n{st}"
+            )
 
     branch_safe = sanitize_branch(branch)
     code, br_out = _run(["git", "checkout", "-b", branch_safe], cwd=repo)
     if code != 0:
+        if stashed:
+            _, pop_out = _run(["git", "stash", "pop"], cwd=repo)
+            return 4, f"git checkout -b failed:\n{br_out}\nstash pop:\n{pop_out}"
         return 4, f"git checkout -b failed:\n{br_out}"
 
     p = max(0, min(int(strip), 10))
@@ -93,10 +128,9 @@ def apply_patch_commit_push_pr(
         capture_output=True,
     )
     if dry.returncode != 0:
-        _run(["git", "checkout", "-"], cwd=repo)
-        _run(["git", "branch", "-D", branch_safe], cwd=repo)
         err = (dry.stderr or dry.stdout or b"").decode("utf-8", errors="replace")
-        return 5, f"patch dry-run failed:\n{err}"
+        unwind_local_branch_and_stash()
+        return 5, f"patch dry-run failed:\n{err}\n" + "\n".join(logs)
 
     real = subprocess.run(
         ["patch", strip_arg, "--batch", "--forward"],
@@ -105,31 +139,32 @@ def apply_patch_commit_push_pr(
         capture_output=True,
     )
     if real.returncode != 0:
-        _run(["git", "checkout", "-"], cwd=repo)
-        _run(["git", "branch", "-D", branch_safe], cwd=repo)
         err = (real.stderr or real.stdout or b"").decode("utf-8", errors="replace")
-        return 6, f"patch apply failed:\n{err}"
+        unwind_local_branch_and_stash()
+        return 6, f"patch apply failed:\n{err}\n" + "\n".join(logs)
 
     code, add_out = _run(["git", "add", "-A"], cwd=repo)
     if code != 0:
+        unwind_local_branch_and_stash()
         logs.append(add_out)
         return 7, "\n".join(logs)
 
-    code, diff_cached = _run(["git", "diff", "--cached", "--quiet"], cwd=repo)
+    code, _qc = _run(["git", "diff", "--cached", "--quiet"], cwd=repo)
     if code == 0:
-        _run(["git", "checkout", "-"], cwd=repo)
-        _run(["git", "branch", "-D", branch_safe], cwd=repo)
-        return 8, "No changes staged after patch — nothing to commit."
+        unwind_local_branch_and_stash()
+        return 8, "No changes staged after patch — nothing to commit.\n" + "\n".join(logs)
 
     msg = (commit_message or pr_title or "Automated patch").strip()
     code, co_out = _run(["git", "commit", "-m", msg], cwd=repo)
     logs.append(co_out)
     if code != 0:
+        unwind_local_branch_and_stash()
         return 9, "\n".join(logs)
 
     code, pu_out = _run(["git", "push", "-u", "origin", branch_safe], cwd=repo)
     logs.append(pu_out)
     if code != 0:
+        unwind_local_branch_and_stash()
         return 10, "\n".join(logs)
 
     body = (pr_body or "").strip() or "(patch applied via dev-agents UI)"
@@ -148,6 +183,19 @@ def apply_patch_commit_push_pr(
     )
     logs.append(pr_out)
     if code != 0:
+        logs.append(
+            "\n(PR failed after push — remote branch may exist; fix gh auth/title and retry "
+            "or delete the remote branch manually.)"
+        )
+        _run(["git", "checkout", original_branch], cwd=repo)
+        if stashed:
+            _, pop_out = _run(["git", "stash", "pop"], cwd=repo)
+            logs.append(f"\nReturned to {original_branch}; stash pop:\n{pop_out}")
         return 11, "\n".join(logs)
+
+    _run(["git", "checkout", original_branch], cwd=repo)
+    if stashed:
+        _, pop_out = _run(["git", "stash", "pop"], cwd=repo)
+        logs.append(f"\nReturned to {original_branch}; stash pop:\n{pop_out}")
 
     return 0, "\n".join(logs)
