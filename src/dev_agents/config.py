@@ -7,7 +7,7 @@ def ollama_base_url() -> str:
 
 
 def ollama_model() -> str:
-    return os.environ.get("OLLAMA_MODEL", "gemma3:latest")
+    return os.environ.get("OLLAMA_MODEL", "gemma4:31b")
 
 
 def workspace_paths() -> list[Path]:
