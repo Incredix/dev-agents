@@ -119,6 +119,131 @@ def _mask_url(url: str) -> str:
     return u[:28] + "…" + u[-8:]
 
 
+_TREE_SKIP_DIRS = frozenset(
+    {
+        ".git",
+        ".svn",
+        ".hg",
+        ".venv",
+        "venv",
+        "__pycache__",
+        ".pytest_cache",
+        ".mypy_cache",
+        ".ruff_cache",
+        "node_modules",
+        ".next",
+        "dist",
+        "build",
+        ".eggs",
+        "*.egg-info",
+        "coverage",
+        "htmlcov",
+        "staticfiles",
+        ".tox",
+        ".gradle",
+        "target",
+        "logs",
+        ".streamlit",
+    }
+)
+
+
+def _dir_tree_lines(root: Path, *, max_depth: int = 3, max_lines: int = 220) -> list[str]:
+    """Ascii tree depth-limited; skips bulky / generated dirs."""
+
+    lines: list[str] = []
+
+    def walk(p: Path, prefix: str, depth: int) -> None:
+        if depth > max_depth or len(lines) >= max_lines:
+            return
+        try:
+            childs = sorted(
+                p.iterdir(),
+                key=lambda x: (not x.is_dir(), x.name.lower()),
+            )
+        except (PermissionError, OSError) as exc:
+            lines.append(f"{prefix}[{exc.__class__.__name__}]")
+            return
+        dirs = []
+        files = []
+        for c in childs:
+            if c.name.startswith(".") and c.name != ".env":
+                continue
+            if c.is_dir() and (c.name in _TREE_SKIP_DIRS or c.name.endswith(".egg-info")):
+                continue
+            if c.is_symlink():
+                continue
+            (dirs if c.is_dir() else files).append(c)
+        ordered = dirs + files[: max(0, 80 - len(dirs))]
+        total = len(ordered)
+        for i, item in enumerate(ordered):
+            if len(lines) >= max_lines:
+                lines.append(prefix + "… [truncated]")
+                return
+            branch = "├── " if i < total - 1 else "└── "
+            mark = "/" if item.is_dir() else ""
+            lines.append(f"{prefix}{branch}{item.name}{mark}")
+            if item.is_dir() and depth < max_depth:
+                ext = "│   " if i < total - 1 else "    "
+                walk(item, prefix + ext, depth + 1)
+
+    try:
+        root_res = root.resolve()
+    except (OSError, RuntimeError):
+        root_res = root
+    lines.append(str(root_res) + "/")
+    if root_res.is_dir():
+        walk(root_res, "", 0)
+    elif root_res.exists():
+        lines.append("  (single file)")
+    else:
+        lines.append("  (does not exist or unreadable)")
+    return lines
+
+
+def _workspace_overview_markdown(path_str: str) -> str:
+    """Short human map for stacks we recognize; still useful as a checklist."""
+    tail = Path(path_str).resolve().name if path_str else ""
+    lp = path_str.lower()
+    tcp_like = lp.endswith("/tcp") or "/tcp/" in lp
+    vn_like = "vanna-trade" in lp or "optionsignals" in lp
+
+    if tcp_like:
+        return f"""##### TradeChefPro stack (`{tail}`)
+
+| Area | Where to look |
+|------|----------------|
+| Django app | **`website/`** — views (`vanna_views`, `investment_views`, …), **`models.py`**, **`templates/`**, **`broker_*`** |
+| Settings / URLs | **`tcp/`** |
+| PCS / trades API | **`website/trades_engine.py`**, **`website/vanna_client.py`**, SPA in **`trades-ui/`** (Vite) |
+| Live alerts ingest | **`website/live_trades_views.py`** (consumer of vanna webhook fan-out) |
+| Discord bot | **`discord-bot/`** |
+| Scripts & cron wrappers | **`scripts/`** |
+
+_Docs: **`README.md`**, **`docs/`**._
+
+"""
+    if vn_like:
+        return f"""##### OptionsSignals / vanna-trade (`{tail}`)
+
+| Area | Where to look |
+|------|----------------|
+| FastAPI entry | **`backend/main.py`** (routers mounted here) |
+| Investment desk / scheduler | **`backend/investment_scanner.py`**, job wiring in **`background_tasks`** / similar |
+| TradingView webhook | **`backend/tradechef_webhook.py`** (+ discord helpers beside it) |
+| Analytics / signals | **`backend/analytics.py`**, **`signals.py`** |
+| Data / sync | **`backend/data_sync.py`**, **`cache.py`** |
+
+**Env & ops:** **`README.md`**, **`BIG_PICTURE.md`**, **`ARCHITECTURE.md`** (repo root); production deploy is often **`/opt/OptionsSignals`** on the API host.
+
+"""
+    return f"""##### `{tail or path_str}`
+
+_No built-in map for this folder._ Use the shallow tree below, or tell **Plan/Coder** a file path (`-r`) or **`grep`** target.
+
+"""
+
+
 _load_repo_dotenv()
 
 import streamlit as st  # noqa: E402
@@ -219,6 +344,49 @@ else:
         key="workspace_single_path",
         placeholder="/abs/path/to/tcp",
     )
+
+paths_for_trees: list[str] = []
+seen_tp: set[str] = set()
+for _p in _ws_paths_main:
+    px = (_p or "").strip()
+    if px and px not in seen_tp:
+        seen_tp.add(px)
+        paths_for_trees.append(px)
+wxa = (workspace_abs or "").strip()
+if wxa and wxa not in seen_tp:
+    paths_for_trees.append(wxa)
+
+with st.expander("Workspace maps — overview & shallow trees", expanded=False):
+    st.caption(
+        "One block per **`AGENT_WORKSPACES`** path (plus your override if it differs). "
+        "Skips `.git`, `node_modules`, `venv`, `__pycache__`, etc."
+    )
+    if not paths_for_trees:
+        st.info("No workspace paths configured.")
+    for ti, wp in enumerate(paths_for_trees):
+        label = Path(wp).name or wp
+        with st.expander(f"**{label}** — `{wp}`", expanded=False):
+            st.markdown(_workspace_overview_markdown(wp))
+            c1, c2 = st.columns(2)
+            with c1:
+                treed = st.slider("Tree depth", 1, 5, 3, key=f"_map_depth_{ti}")
+            with c2:
+                linecap = st.number_input(
+                    "Line cap",
+                    min_value=60,
+                    max_value=400,
+                    value=220,
+                    step=20,
+                    key=f"_map_lines_{ti}",
+                )
+            rootp = Path(wp)
+            if not rootp.is_dir():
+                st.warning("Not a directory or path is missing.")
+            else:
+                body = "\n".join(
+                    _dir_tree_lines(rootp, max_depth=int(treed), max_lines=int(linecap))
+                )
+                st.code(body, language="text")
 
 tabs = st.tabs(["Ollama check", "Hello", "Plan", "Coder"])
 
