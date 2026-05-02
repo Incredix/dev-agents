@@ -33,8 +33,22 @@ curl -sS "${OLLAMA_BASE_URL:-http://127.0.0.1:11434}/api/tags" | python3 -c \
 ```bash
 source .venv/bin/activate
 set -a && source .env && set +a
-python -c "from dev_agents.graphs.hello import run; print(run('LangGraph on a homelab'))"
+dev-agents hello --topic "LangGraph on a homelab"
 ```
+
+### Plan an iteration (workspace + optional file excerpt)
+
+Point `AGENT_WORKSPACES` at your checkouts (colon-separated), then:
+
+```bash
+set -a && source .env && set +a
+dev-agents plan -i "Refactor trades API error handling to return JSON errors" \
+  -r website/trades_api_views.py \
+  -w /home/you/code/tradechefpro/tcp
+```
+
+If `AGENT_WORKSPACES` already includes `tcp`, you can omit `-w` and use `--workspace-index` when you have several roots.
+For coding-heavy prompts, set `OLLAMA_MODEL` to a Qwen coder tag in `.env` for that session.
 
 ## Layout
 
@@ -42,7 +56,9 @@ python -c "from dev_agents.graphs.hello import run; print(run('LangGraph on a ho
 |------|---------|
 | `src/dev_agents/config.py` | Env: Ollama URL, model name, workspace paths |
 | `src/dev_agents/chat.py` | Shared `ChatOllama` factory |
-| `src/dev_agents/graphs/` | One module per workflow |
+| `src/dev_agents/graphs/` | One module per workflow (`hello`, `code_plan`) |
+| `src/dev_agents/cli.py` | `dev-agents` console entry point |
+| `src/dev_agents/workspace.py` | Safe reads under a repo root |
 
 ## Git
 
