@@ -50,6 +50,66 @@ def _agent_workspaces_raw_from_dotenv_file() -> str:
     return last
 
 
+def _suggest_workspace_index(paths: list[str], blob: str) -> tuple[int, str]:
+    """Keyword routing: which checkout is the user probably asking about."""
+    blob = (blob or "").lower()
+    if len(paths) <= 1:
+        return 0, "single workspace"
+
+    tcp_hits = (
+        "django",
+        "website/",
+        "manage.py",
+        "investment_views",
+        "live_trades",
+        "traderecord",
+        "stripe",
+        "tailwind",
+        "vite",
+        "pcs",
+        "/trades/",
+        "postgresql",
+        "migration",
+        "template",
+        "discord-bot",
+        "broker_",
+    )
+    vanna_hits = (
+        "investment_scanner",
+        "background_tasks",
+        "tradechef_webhook",
+        "fastapi",
+        "apscheduler",
+        "optionsignals",
+        "vanna-api",
+        "websocket",
+        "uvicorn",
+        "alembic",
+        "/api/v1/",
+        "morning brief",
+        "middleware",
+        "asyncpg",
+    )
+
+    scores: list[int] = []
+    for p in paths:
+        pl = p.rstrip("/").lower()
+        is_tcp_like = pl.endswith("/tcp") or "/tcp/" in pl
+        is_vanna_like = "vanna-trade" in pl or "optionsignals" in pl
+        s = 0
+        if is_tcp_like:
+            s += sum(2 for kw in tcp_hits if kw in blob)
+        if is_vanna_like:
+            s += sum(2 for kw in vanna_hits if kw in blob)
+        scores.append(s)
+
+    best = max(scores)
+    idx = scores.index(best) if best > 0 else 0
+    tail = paths[idx].rstrip("/").split("/")[-1]
+    reason = f"matched hints → `{tail}`" if best > 0 else f"no keywords — default `{paths[0].rstrip('/').split('/')[-1]}`"
+    return idx, reason
+
+
 def _mask_url(url: str) -> str:
     if not url:
         return "(unset)"
@@ -84,28 +144,10 @@ with st.sidebar:
     )
     st.text_input("OLLAMA_MODEL (from env)", value=model_env, disabled=True)
     model_ov = st.text_input("Per-run model override (optional)", value="", placeholder="e.g. qwen2.5-coder:32b")
-    # One Streamlit app: switch repo per run. AGENT_WORKSPACES="path1:path2:path3" lists allowed roots.
     _ws_paths = [p.strip() for p in wsp_raw.split(":") if p.strip()]
     st.caption(
-        f"**AGENT_WORKSPACES** → `{len(_ws_paths)}` path(s) "
-        "(from **`dev-agents/.env`** first, then shell env)."
+        f"**AGENT_WORKSPACES**: `{len(_ws_paths)}` path(s); workspace picker is **below** (routing + auto-pick)."
     )
-    if len(_ws_paths) > 1:
-        st.caption("Pick one workspace for Plan/Coder.")
-        _picked = st.selectbox("Workspace repo", _ws_paths, key="dev_agents_workspace_pick")
-        _override = st.text_input(
-            "Override path (optional)",
-            value="",
-            key="dev_agents_workspace_override",
-            placeholder="Leave blank to use the selection above",
-        )
-        workspace_abs = _override.strip() or _picked
-    else:
-        workspace_abs = st.text_input(
-            "Workspace root (-w)",
-            value=_ws_paths[0] if _ws_paths else "",
-            placeholder="/abs/path/to/tcp",
-        )
 
     import inspect as _inspect
     import sys as _sys
@@ -129,6 +171,54 @@ with st.sidebar:
                 "**`python -m streamlit run ui/app.py`** (not a random **`streamlit`** on PATH)."
             )
 
+
+# ─── Workspace (main column: must render after sidebar; uses Plan/Coder hints from session) ─────
+wsp_main = (_agent_workspaces_raw_from_dotenv_file().strip() or os.environ.get("AGENT_WORKSPACES", "").strip())
+_ws_paths_main = [p.strip() for p in wsp_main.split(":") if p.strip()]
+
+if len(_ws_paths_main) > 1:
+    st.divider()
+    col_r1, col_r2 = st.columns((3, 1))
+    with col_r1:
+        st.text_input(
+            "Routing hint (optional)",
+            value="",
+            key="routing_ws_hint",
+            placeholder="e.g. morning brief in investment_scanner",
+            help="Combined with Plan + Coder text when auto-pick is on.",
+        )
+    with col_r2:
+        auto_ws = st.checkbox("Auto-pick workspace", True, key="workspace_auto_pick")
+
+    _blob = "".join(
+        [
+            str(st.session_state.get("routing_ws_hint", "") or ""),
+            str(st.session_state.get("plan_i", "") or ""),
+            str(st.session_state.get("coder_i", "") or ""),
+        ]
+    ).lower()
+    _sidx, _swhy = _suggest_workspace_index(_ws_paths_main, _blob)
+
+    if auto_ws:
+        st.session_state["ws_radio"] = _ws_paths_main[_sidx]
+
+    _picked_rad = st.radio(
+        "Workspace for Plan / Coder",
+        options=_ws_paths_main,
+        horizontal=True,
+        key="ws_radio",
+    )
+    st.caption(f"**{_swhy}**" + (" · auto-pick on" if auto_ws else ""))
+
+    wo = st.text_input("Override path (optional)", value="", key="dev_agents_workspace_override")
+    workspace_abs = (wo.strip() or _picked_rad)
+else:
+    workspace_abs = st.text_input(
+        "Workspace root (-w)",
+        value=_ws_paths_main[0] if _ws_paths_main else "",
+        key="workspace_single_path",
+        placeholder="/abs/path/to/tcp",
+    )
 
 tabs = st.tabs(["Ollama check", "Hello", "Plan", "Coder"])
 
