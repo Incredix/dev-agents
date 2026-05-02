@@ -185,6 +185,17 @@ def run_coder(
         msgs: list[AnyMessage] = [SystemMessage(ctx)]
         msgs.extend(state["messages"])
         res = llm.invoke(msgs)
+        raw0 = res.content if isinstance(res.content, str) else str(res.content)
+        # Ollama sometimes returns an empty string after tool rounds — one nudge retry.
+        if (not raw0 or not str(raw0).strip()) and state.get("messages"):
+            retry_msgs = msgs + [
+                HumanMessage(
+                    content="Your previous assistant message was empty. "
+                    "Reply in plain English: summarize tool results or answer the user directly "
+                    "(no JSON unless calling a tool)."
+                )
+            ]
+            res = llm.invoke(retry_msgs)
         return {"messages": [res]}
 
     def run_tool(state: CoderState) -> dict:
