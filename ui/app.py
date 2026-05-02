@@ -62,9 +62,25 @@ with st.sidebar:
         disabled=True,
     )
     st.text_input("OLLAMA_MODEL (from env)", value=model_env, disabled=True)
-    default_w = wsp_raw.split(":")[0].strip() if wsp_raw else ""
     model_ov = st.text_input("Per-run model override (optional)", value="", placeholder="e.g. qwen2.5-coder:32b")
-    workspace_abs = st.text_input("Workspace root (-w)", value=default_w, placeholder="/abs/path/to/tcp")
+    # One Streamlit app: switch repo per run. AGENT_WORKSPACES="path1:path2:path3" lists allowed roots.
+    _ws_paths = [p.strip() for p in wsp_raw.split(":") if p.strip()]
+    if len(_ws_paths) > 1:
+        st.caption("Multiple repos in **`AGENT_WORKSPACES`** — pick one for Plan/Coder (same app, no second Streamlit).")
+        _picked = st.selectbox("Workspace repo", _ws_paths, key="dev_agents_workspace_pick")
+        _override = st.text_input(
+            "Override path (optional)",
+            value="",
+            key="dev_agents_workspace_override",
+            placeholder="Leave blank to use the selection above",
+        )
+        workspace_abs = _override.strip() or _picked
+    else:
+        workspace_abs = st.text_input(
+            "Workspace root (-w)",
+            value=_ws_paths[0] if _ws_paths else "",
+            placeholder="/abs/path/to/tcp",
+        )
 
     import inspect as _inspect
     import sys as _sys

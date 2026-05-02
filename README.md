@@ -22,6 +22,8 @@ python -m streamlit run ui/app.py --server.address 127.0.0.1 --server.port 8501
 
 Opens **`http://localhost:8501`** — Streamlit listens on **localhost** only by default.
 
+**Multiple repos, one UI:** set **`AGENT_WORKSPACES=/path/to/tcp:/path/to/other-repo`** (colon-separated). The Streamlit sidebar shows a **workspace picker** so Plan/Coder run against the chosen checkout — still **one** `streamlit run` process.
+
 **Two tabs / port 8502?** If **`8501` is already in use**, Streamlit silently binds **`8502`**, **`8503`**, … — usually an **older Streamlit you forgot to stop**, still running stale code. Free the port:
 
 ```bash
