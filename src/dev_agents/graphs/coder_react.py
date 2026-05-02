@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import os
+import sys
+import time
 from pathlib import Path
 from typing import Annotated, TypedDict
 
@@ -93,6 +95,27 @@ def _msg_preview(m: AnyMessage, max_len: int = 800) -> str:
     return f"{cn}: {_truncate(str(getattr(m, 'content', m)), max_len)}"
 
 
+def _extract_final_answer(messages: list[AnyMessage]) -> str:
+    for m in reversed(messages):
+        if isinstance(m, AIMessage):
+            raw = m.content if isinstance(m.content, str) else str(m.content)
+            if _parse_tool_json(raw):
+                continue
+            if not _assistant_is_plain_answer(raw):
+                continue
+            if raw.strip():
+                return raw
+    return ""
+
+
+def _emit_trace(trace_to_stderr: bool, step_log: list[str] | None, msg: str) -> None:
+    if step_log is not None:
+        step_log.append(msg)
+    if trace_to_stderr:
+        ts = time.strftime("%H:%M:%S")
+        print(f"[dev-agents coder {ts}] {msg}", file=sys.stderr, flush=True)
+
+
 def _last_ai(state: CoderState) -> AIMessage | None:
     for m in reversed(state.get("messages") or []):
         if isinstance(m, AIMessage):
@@ -109,6 +132,8 @@ def run_coder(
     recursion_limit: int = 40,
     checkpoint_path: Path | None = None,
     use_checkpoint: bool = True,
+    verbose: bool = False,
+    step_log: list[str] | None = None,
 ) -> str:
     tools = build_workspace_tools(workspace_root)
     tool_map = {getattr(t, "name", "?"): t for t in tools}
@@ -174,6 +199,35 @@ def run_coder(
     invoke_cfg: dict = {"recursion_limit": base_limit}
 
     human_only: CoderState = {"messages": [HumanMessage(content=instruction)]}
+    stream_trace = verbose or step_log is not None
+
+    def _run(graph) -> dict:
+        if not stream_trace:
+            return dict(graph.invoke(human_only, invoke_cfg))
+
+        ck_info = repr(checkpoint_path or default_checkpoint_path()) if use_checkpoint else "disabled"
+        _emit_trace(
+            verbose,
+            step_log,
+            f"streaming steps (checkpoint={bool(use_checkpoint)} db={ck_info} thread={thread_id!r})",
+        )
+        last: dict | None = None
+        for i, st in enumerate(
+            graph.stream(human_only, invoke_cfg, stream_mode="values"),
+            start=1,
+        ):
+            last = dict(st)
+            msgs = last.get("messages") or []
+            if msgs:
+                _emit_trace(
+                    verbose,
+                    step_log,
+                    f"step {i} messages={len(msgs)} :: {_msg_preview(msgs[-1], 950)}",
+                )
+            else:
+                _emit_trace(verbose, step_log, f"step {i} (empty messages)")
+        _emit_trace(verbose, step_log, "stream complete.")
+        return last if last else {}
 
     if use_checkpoint:
         invoke_cfg["configurable"] = {"thread_id": thread_id}
@@ -181,19 +235,10 @@ def run_coder(
         checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
         with SqliteSaver.from_conn_string(str(checkpoint_path)) as saver:
             graph = builder.compile(checkpointer=saver)
-            result = graph.invoke(human_only, invoke_cfg)
+            result = _run(graph)
     else:
         graph = builder.compile()
-        result = graph.invoke(human_only, invoke_cfg)
+        result = _run(graph)
 
     messages = result.get("messages") or []
-    for m in reversed(messages):
-        if isinstance(m, AIMessage):
-            raw = m.content if isinstance(m.content, str) else str(m.content)
-            if _parse_tool_json(raw):
-                continue
-            if not _assistant_is_plain_answer(raw):
-                continue
-            if raw.strip():
-                return raw
-    return ""
+    return _extract_final_answer(messages)

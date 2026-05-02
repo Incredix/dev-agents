@@ -93,6 +93,7 @@ def cmd_coder(ns: argparse.Namespace) -> int:
         thread_id=ns.thread_id,
         recursion_limit=ns.recursion_limit,
         use_checkpoint=not ns.no_checkpoint,
+        verbose=ns.verbose,
     )
     print(text)
     return 0
@@ -174,6 +175,12 @@ def main(argv: list[str] | None = None) -> int:
         "--no-checkpoint",
         action="store_true",
         help="Disable SQLite checkpointing (ephemeral run)",
+    )
+    pe.add_argument(
+        "--verbose",
+        "-v",
+        action="store_true",
+        help="Print each LangGraph step (model/tool) to stderr while running",
     )
     pe.set_defaults(_run=cmd_coder)
 

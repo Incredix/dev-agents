@@ -123,6 +123,12 @@ with tabs[3]:
     with col_b:
         thread_id = st.text_input("Thread id", value="streamlit")
     no_ckpt = st.checkbox("No SQLite checkpoint (--no-checkpoint)", value=False)
+    coder_verbose = st.checkbox(
+        "Verbose step log (model/tool previews)",
+        value=False,
+        key="coder_verbose",
+        help="Captures LangGraph snapshots after each superstep.",
+    )
     if st.button("Run coder", key="coder_btn"):
         from pathlib import Path as P
 
@@ -132,6 +138,7 @@ with tabs[3]:
         if not ws or not P(ws).is_dir():
             st.error("Set a valid workspace root (sidebar `-w`).")
         else:
+            steps: list[str] = []
             with st.spinner("Coder agent (may take a minute)…"):
                 txt = run_coder(
                     instr_c,
@@ -140,7 +147,11 @@ with tabs[3]:
                     thread_id=thread_id or "streamlit",
                     recursion_limit=int(rec_lim),
                     use_checkpoint=not no_ckpt,
+                    step_log=steps if coder_verbose else None,
                 )
+            if coder_verbose and steps:
+                with st.expander("Coder trace (verbose)", expanded=True):
+                    st.code("\n".join(steps), language="text")
             body = txt or "(empty reply)"
             b = body.strip()
             if b.startswith("{") and "\"name\"" in b and "\"arguments\"" in b:

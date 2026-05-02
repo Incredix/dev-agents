@@ -20,7 +20,7 @@ cd dev-agents
 streamlit run ui/app.py
 ```
 
-Opens **`http://localhost:8501`** — Streamlit listens on **localhost** only by default. Tabs: Ollama check, Hello, Plan, Coder. The app loads **`dev-agents/.env`** with **python-dotenv** (still never commit `.env`).
+Opens **`http://localhost:8501`** — Streamlit listens on **localhost** only by default. Tabs: Ollama check, Hello, Plan, Coder. The app loads **`dev-agents/.env`** with **python-dotenv** (still never commit `.env`). In the **Coder** tab, enable **“Verbose step log”** to expand a trace of LangGraph steps after the run completes.
 
 ### Tailscale (reach the UI from your phone / laptop on the tailnet)
 
@@ -120,6 +120,8 @@ The `ollama-check` command uses the same env and prints model names or the same 
 | `coder` | Multi-step **read-only** exploration (list / read / grep / `rg`) with SQLite checkpoints |
 | `patch-apply` | GNU `patch` dry-run (default); `--apply` writes files |
 | `ollama-check` | `GET /api/tags` |
+
+Use **`--verbose` / `-v`** on **`dev-agents coder`** to stream each LangGraph step (preview of the latest message) to **stderr** while the graph runs.
 
 Use `--model`/`-m` on `hello`, `plan`, and `coder` to override `OLLAMA_MODEL` per run (Qwen coder tags work well for `coder`).
 
