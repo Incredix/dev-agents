@@ -108,6 +108,40 @@ def _extract_final_answer(messages: list[AnyMessage]) -> str:
     return ""
 
 
+def _extract_fallback_explanation(messages: list[AnyMessage]) -> str:
+    """When the model never produced an accepted plain answer (Ollama + tool JSON is common)."""
+    if not messages:
+        return (
+            "**No messages in graph state.** Check Ollama is up, `OLLAMA_MODEL` is pulled, "
+            "and the instruction is non-empty."
+        )
+    last_ai_raw: str | None = None
+    last_ai_toolish = False
+    for m in reversed(messages):
+        if isinstance(m, AIMessage):
+            raw = m.content if isinstance(m.content, str) else str(m.content)
+            if not raw or not str(raw).strip():
+                continue
+            last_ai_raw = raw
+            last_ai_toolish = bool(_parse_tool_json(raw)) or not _assistant_is_plain_answer(raw)
+            break
+    n = len(messages)
+    tail = [_msg_preview(m, 400) for m in messages[-6:]]
+    lines = [
+        "**The coder graph finished without a plain-text answer.** Common causes:",
+        "- Model kept emitting **tool JSON** and hit **recursion limit** before summarizing → raise *Recursion limit* or try a coder-tuned model (e.g. `qwen2.5-coder:32b`).",
+        "- **Empty instruction** in the UI.",
+        "- **Verbose step log** shows each step — enable it to see tool traffic.",
+        "",
+        f"(message_count={n})",
+    ]
+    if last_ai_raw is not None:
+        tag = "last model output was tool-style or rejected" if last_ai_toolish else "last model output"
+        lines.extend(["", f"**{tag}:**", "```", _truncate(last_ai_raw, 3500), "```"])
+    lines.extend(["", "**Recent messages:**", "```text", *tail, "```"])
+    return "\n".join(lines)
+
+
 def _emit_trace(trace_to_stderr: bool, step_log: list[str] | None, msg: str) -> None:
     if step_log is not None:
         step_log.append(msg)
@@ -241,4 +275,7 @@ def run_coder(
         result = _run(graph)
 
     messages = result.get("messages") or []
-    return _extract_final_answer(messages)
+    answer = _extract_final_answer(messages)
+    if answer.strip():
+        return answer
+    return _extract_fallback_explanation(messages)

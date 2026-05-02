@@ -137,18 +137,24 @@ with tabs[3]:
         ws = workspace_abs.strip()
         if not ws or not P(ws).is_dir():
             st.error("Set a valid workspace root (sidebar `-w`).")
+        elif not (instr_c or "").strip():
+            st.error("Enter a **Coder instruction** (empty instructions often yield no visible reply).")
         else:
             steps: list[str] = []
             with st.spinner("Coder agent (may take a minute)…"):
-                txt = run_coder(
-                    instr_c,
-                    workspace_root=P(ws),
-                    model=_model_arg(),
-                    thread_id=thread_id or "streamlit",
-                    recursion_limit=int(rec_lim),
-                    use_checkpoint=not no_ckpt,
-                    step_log=steps if coder_verbose else None,
-                )
+                try:
+                    txt = run_coder(
+                        instr_c,
+                        workspace_root=P(ws),
+                        model=_model_arg(),
+                        thread_id=thread_id or "streamlit",
+                        recursion_limit=int(rec_lim),
+                        use_checkpoint=not no_ckpt,
+                        step_log=steps if coder_verbose else None,
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    st.exception(exc)
+                    txt = ""
             if coder_verbose and steps:
                 with st.expander("Coder trace (verbose)", expanded=True):
                     st.code("\n".join(steps), language="text")
