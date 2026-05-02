@@ -144,7 +144,7 @@ If `AGENT_WORKSPACES` already includes `tcp`, you can omit `-w` and use `--works
 
 ### Coder (tools + checkpoints)
 
-The `coder` graph calls Ollama repeatedly: the model emits JSON tool calls (Ollama-compatible), tools run on disk, then the model answers. **No writes** — read-only tools only.
+The `coder` graph calls Ollama repeatedly: the model emits JSON tool calls (Ollama-compatible), tools run on disk, then the model answers. **No writes** — read-only tools only. If a model appends junk after the JSON (e.g. `<tool_call|>`), the runner now decodes the leading object with `JSONDecoder.raw_decode` so routing to tools still works; **restart Streamlit** after `git pull` so the UI picks up fixes.
 
 ```bash
 set -a && source .env && set +a

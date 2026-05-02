@@ -141,4 +141,16 @@ with tabs[3]:
                     recursion_limit=int(rec_lim),
                     use_checkpoint=not no_ckpt,
                 )
-            st.markdown(txt or "(empty reply)")
+            body = txt or "(empty reply)"
+            b = body.strip()
+            if b.startswith("{") and "\"name\"" in b and "\"arguments\"" in b:
+                st.warning(
+                    "The model leaked a tool-call JSON without finishing the turn — "
+                    "try again or bump recursion limit."
+                )
+                st.code(body, language="json")
+            elif "<tool_call" in body.lower() or "<tool|" in body.lower():
+                st.warning("Model emitted template junk after JSON; refresh and retry, or lower temperature.")
+                st.code(body)
+            else:
+                st.markdown(body)

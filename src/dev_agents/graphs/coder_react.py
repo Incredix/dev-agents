@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import os
-import re
 from pathlib import Path
 from typing import Annotated, TypedDict
 
@@ -20,7 +19,7 @@ from dev_agents.tools_workspace import build_workspace_tools
 _CODER_SYSTEM = """You are a coding assistant for a single local git checkout.
 You have tools: read_workspace_file, list_workspace_directory, grep_workspace, ripgrep_workspace.
 
-To call a tool, respond with ONLY one JSON object and nothing else (no markdown, no prose):
+To call a tool, respond with ONLY valid JSON — one single object — and nothing before or after it (no prose, no markdown code fences, never XML-like tags such as <tool_call>):
 {"name": "<tool_name>", "arguments": {<argdict>}}
 
 Example:
@@ -37,28 +36,61 @@ def default_checkpoint_path() -> Path:
 
 
 def _parse_tool_json(content: str) -> tuple[str, dict] | None:
-    """Detect Ollama-style pseudo tool call embedded in assistant text."""
+    """Extract first JSON object (tool call). Handles trailing tokenizer junk e.g. ``<tool_call|>`` after ``}``."""
     if not isinstance(content, str):
         return None
     s = content.strip()
-    if not s.startswith("{"):
-        m = re.search(r"\{[\s\S]*\"name\"[\s\S]*\"arguments\"[\s\S]*\}\s*$", s)
-        if not m:
-            return None
-        s = m.group(0)
+    start = s.find("{")
+    if start < 0:
+        return None
+    frag = s[start:]
+    decoder = json.JSONDecoder()
     try:
-        o = json.loads(s)
+        obj, _end = decoder.raw_decode(frag)
     except json.JSONDecodeError:
         return None
-    name = o.get("name")
-    args = o.get("arguments")
+    if not isinstance(obj, dict):
+        return None
+    name = obj.get("name")
+    args = obj.get("arguments")
     if isinstance(name, str) and isinstance(args, dict):
         return name, args
     return None
 
 
+def _assistant_is_plain_answer(raw: str) -> bool:
+    """False if message should be routed to tools or skipped as intermediate tool blob."""
+    if not isinstance(raw, str) or not raw.strip():
+        return False
+    if _parse_tool_json(raw):
+        return False
+    low = raw.lower()
+    return "<tool_call" not in low and "</tool_call" not in low and "<tool|" not in low
+
+
 class CoderState(TypedDict):
     messages: Annotated[list[AnyMessage], add_messages]
+
+
+def _truncate(s: str, max_len: int = 2400) -> str:
+    s = (s or "").strip()
+    if len(s) <= max_len:
+        return s
+    return s[: max_len - 20] + "\n… [truncated]"
+
+
+def _msg_preview(m: AnyMessage, max_len: int = 800) -> str:
+    cn = type(m).__name__.replace("Message", "").lower()
+    if isinstance(m, ToolMessage):
+        return f"tool[{cn}]: {_truncate(str(m.content), max_len)}"
+    if isinstance(m, AIMessage):
+        raw = m.content if isinstance(m.content, str) else str(m.content)
+        if _parse_tool_json(raw):
+            return f"assistant[{cn}]: (tool-call JSON) {_truncate(raw, min(600, max_len))}"
+        return f"assistant[{cn}]: {_truncate(raw, max_len)}"
+    if isinstance(m, HumanMessage):
+        return f"user: {_truncate(str(m.content), max_len)}"
+    return f"{cn}: {_truncate(str(getattr(m, 'content', m)), max_len)}"
 
 
 def _last_ai(state: CoderState) -> AIMessage | None:
@@ -159,6 +191,8 @@ def run_coder(
         if isinstance(m, AIMessage):
             raw = m.content if isinstance(m.content, str) else str(m.content)
             if _parse_tool_json(raw):
+                continue
+            if not _assistant_is_plain_answer(raw):
                 continue
             if raw.strip():
                 return raw
