@@ -1,0 +1,9 @@
+# Example overnight queue for: dev-agents queue scripts/queue.example.txt
+# Tasks are separated by a line that contains only: ---
+
+Describe and outline the first change you would make for a smoke test (read-only answer is ok).
+
+---
+
+# Second task (comments inside a block are fine)
+Add a second instruction here for the next autonomous Coder run.

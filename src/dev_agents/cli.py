@@ -99,6 +99,12 @@ def cmd_coder(ns: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_queue(ns: argparse.Namespace) -> int:
+    from dev_agents.queue_run import run_queue
+
+    return run_queue(ns)
+
+
 def cmd_patch_apply(ns: argparse.Namespace) -> int:
     from dev_agents.patch_apply import run_patch
     from dev_agents.workspace import resolve_workspace_root
@@ -183,6 +189,64 @@ def main(argv: list[str] | None = None) -> int:
         help="Print each LangGraph step (model/tool) to stderr while running",
     )
     pe.set_defaults(_run=cmd_coder)
+
+    pq = sub.add_parser(
+        "queue",
+        help="Headless overnight runner: queue file → Coder each task → diff → patch or gh PR",
+    )
+    pq.add_argument(
+        "queue_file",
+        type=Path,
+        help="Text file: instructions separated by a line containing only ---",
+    )
+    pq.add_argument(
+        "--log",
+        type=Path,
+        default=None,
+        metavar="PATH",
+        help="Append log (default: ./dev-agents-queue.log in cwd)",
+    )
+    _add_workspace_flags(pq)
+    _add_model_flag(pq)
+    pq.add_argument(
+        "--recursion-limit",
+        type=int,
+        default=40,
+        metavar="N",
+        help="Max LangGraph steps per task (default: 40)",
+    )
+    pq.add_argument(
+        "-p",
+        "--strip",
+        type=int,
+        default=1,
+        metavar="N",
+        help="patch -p strip for unified diffs (default: 1)",
+    )
+    pq.add_argument(
+        "--local-patch-only",
+        action="store_true",
+        help="patch(1) into workspace only — no git branch / gh",
+    )
+    pq.add_argument(
+        "--fail-fast",
+        action="store_true",
+        help="Exit after first Coder or patch failure",
+    )
+    pq.add_argument(
+        "--sleep",
+        type=float,
+        default=0,
+        metavar="SEC",
+        help="Seconds to sleep between tasks (optional GPU cooldown)",
+    )
+    pq.add_argument(
+        "--verbose",
+        "-v",
+        action="store_true",
+        help="Print LangGraph trace lines to stderr",
+    )
+    pq.set_defaults(_run=cmd_queue)
 
     pa = sub.add_parser(
         "patch-apply",
