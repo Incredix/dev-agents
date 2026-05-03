@@ -17,6 +17,8 @@ import io
 import os
 import shutil
 import subprocess
+import threading
+import time
 import uuid
 from pathlib import Path
 
@@ -1043,32 +1045,72 @@ with tabs[5]:
             st.error("Enter at least one task in the queue.")
         else:
             lp = Path((st.session_state.get("queue_log_path") or "").strip() or (_REPO / "dev-agents-queue.log"))
-            err_buf = io.StringIO()
-            with contextlib.redirect_stderr(err_buf):
-                code = run_queue_from_text(
-                    qb,
-                    log_path=lp,
-                    workspace=ws,
-                    workspace_index=None,
-                    model=_model_arg(),
-                    recursion_limit=int(q_rec),
-                    strip=int(q_strip),
-                    local_patch_only=bool(q_local),
-                    fail_fast=bool(q_ff),
-                    sleep=float(q_sleep),
-                    verbose=bool(q_verbose),
-                )
-            err_txt = err_buf.getvalue().strip()
-            st.session_state["queue_run_err"] = err_txt
-            st.session_state["queue_run_code"] = code
-            st.session_state["queue_run_log_path"] = str(lp)
+            holder: dict = {"code": None, "exc": None}
+
+            def _queue_worker() -> None:
+                try:
+                    holder["code"] = run_queue_from_text(
+                        qb,
+                        log_path=lp,
+                        workspace=ws,
+                        workspace_index=None,
+                        model=_model_arg(),
+                        recursion_limit=int(q_rec),
+                        strip=int(q_strip),
+                        local_patch_only=bool(q_local),
+                        fail_fast=bool(q_ff),
+                        sleep=float(q_sleep),
+                        verbose=bool(q_verbose),
+                    )
+                except Exception as e:  # noqa: BLE001
+                    holder["exc"] = e
+
+            th = threading.Thread(target=_queue_worker, daemon=True, name="dev-agents-queue")
+            th.start()
+            live = st.empty()
+            st.caption(
+                "**Live log** — tail refreshes ~2×/s while tasks run. "
+                "(Verbose stderr still goes to the Streamlit terminal unless captured.)"
+            )
+            _max_live = 180_000
+            _last = ""
+            while th.is_alive():
+                try:
+                    if lp.is_file():
+                        raw = lp.read_text(encoding="utf-8", errors="replace")
+                        tail = raw[-_max_live:] if len(raw) > _max_live else raw
+                        if tail != _last:
+                            _last = tail
+                            live.code(tail, language="text")
+                except OSError:
+                    pass
+                time.sleep(0.55)
+            th.join(timeout=120.0)
+
+            if holder.get("exc") is not None:
+                st.exception(holder["exc"])
+                code = 1
+            else:
+                code = holder.get("code")
+                if code is None:
+                    code = 1
+
             if lp.is_file():
                 raw_log = lp.read_text(encoding="utf-8", errors="replace")
                 st.session_state["queue_run_tail"] = (
                     raw_log[-120000:] if len(raw_log) > 120000 else raw_log
                 )
+                live.code(
+                    raw_log[-_max_live:] if len(raw_log) > _max_live else raw_log,
+                    language="text",
+                )
             else:
                 st.session_state["queue_run_tail"] = ""
+                live.warning("Log file was not created.")
+
+            st.session_state["queue_run_code"] = code
+            st.session_state["queue_run_log_path"] = str(lp)
+            st.session_state["queue_run_err"] = ""
 
     if "queue_run_code" in st.session_state:
         code = st.session_state.get("queue_run_code")
