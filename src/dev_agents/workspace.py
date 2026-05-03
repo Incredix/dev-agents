@@ -72,38 +72,79 @@ def _coder_documentation_rel_paths() -> list[str]:
     return out
 
 
+def _coder_doc_limits() -> tuple[int | None, int]:
+    """``DEV_AGENTS_CODER_DOC_MAX_TOTAL`` / ``DEV_AGENTS_CODER_DOC_MAX_PER_FILE`` from env.
+
+    Returns ``(max_total_chars, max_bytes_per_file)``. ``max_total_chars`` ``None`` means no total cap.
+    """
+    raw_tot = os.environ.get("DEV_AGENTS_CODER_DOC_MAX_TOTAL", "").strip()
+    if not raw_tot:
+        max_total: int | None = 5_000_000
+    elif raw_tot.lower() in ("0", "none", "unlimited"):
+        max_total = None
+    else:
+        try:
+            max_total = max(1, int(raw_tot))
+        except ValueError:
+            max_total = 5_000_000
+
+    raw_pf = os.environ.get("DEV_AGENTS_CODER_DOC_MAX_PER_FILE", "").strip()
+    if not raw_pf:
+        max_per_file = 2_000_000
+    else:
+        try:
+            v = int(raw_pf)
+        except ValueError:
+            max_per_file = 2_000_000
+        else:
+            max_per_file = 10_000_000 if v <= 0 else max(1024, v)
+
+    return max_total, max_per_file
+
+
 def build_coder_documentation_block(
     root: Path,
     *,
-    max_total_chars: int = 14_000,
-    max_per_file: int = 7_000,
+    max_total_chars: int | None = None,
+    max_per_file: int | None = None,
 ) -> str:
     """
-    Load excerpts from standard + env-configured doc files for injection into the Coder system prompt.
+    Load text from standard + env-configured doc files for injection into the Coder system prompt.
 
-    Skips missing paths. Enforces total size so prompts stay bounded.
+    Skips missing paths. Size limits default to **large** (multi‑MB); set env to cap or use
+    ``DEV_AGENTS_CODER_DOC_MAX_TOTAL=0`` for no total cap.
     """
+    if max_total_chars is None and max_per_file is None:
+        max_total_chars, max_per_file = _coder_doc_limits()
+    else:
+        if max_total_chars is None:
+            max_total_chars = 5_000_000
+        if max_per_file is None:
+            max_per_file = 2_000_000
+
     root = root.resolve()
     parts: list[str] = []
     used = 0
-    max_bytes = max(1024, min(max_per_file, 120_000))
     for rel in _coder_documentation_rel_paths():
-        if used >= max_total_chars:
+        if max_total_chars is not None and used >= max_total_chars:
             break
         try:
-            text = read_repo_file(root, rel, max_bytes=max_bytes)
+            text = read_repo_file(root, rel, max_bytes=max_per_file)
         except (OSError, ValueError):
             continue
-        remaining = max_total_chars - used
-        if remaining <= 0:
-            break
         header = f"### `{rel}`\n\n"
-        budget = remaining - len(header)
-        if budget <= 0:
-            break
-        if len(text) > budget:
-            text = text[:budget].rstrip() + "\n\n[truncated]"
-        block = header + text
+        if max_total_chars is None:
+            block = header + text
+        else:
+            remaining = max_total_chars - used
+            if remaining <= 0:
+                break
+            budget = remaining - len(header)
+            if budget <= 0:
+                break
+            if len(text) > budget:
+                text = text[:budget].rstrip() + "\n\n[truncated]"
+            block = header + text
         parts.append(block)
         used += len(block)
     return "\n\n".join(parts)
