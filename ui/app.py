@@ -15,6 +15,8 @@ from __future__ import annotations
 import contextlib
 import io
 import os
+import shutil
+import subprocess
 import uuid
 from pathlib import Path
 
@@ -596,7 +598,7 @@ with st.expander("Workspace maps — overview & shallow trees", expanded=False):
                 )
                 st.code(body, language="text")
 
-tabs = st.tabs(["Ollama check", "Hello", "Plan", "Coder", "Patch & PR"])
+tabs = st.tabs(["Ollama check", "Hello", "Plan", "Coder", "Patch & PR", "Queue"])
 
 
 def _model_arg() -> str | None:
@@ -976,3 +978,175 @@ with tabs[4]:
                 else:
                     st.error(f"Exit {code}")
                 st.code(log or "(no output)", language="text")
+
+with tabs[5]:
+    st.markdown(
+        "Run **multiple** Coder tasks in order (like `dev-agents queue`). "
+        "Separate each task with a line that contains only **`---`**. "
+        "Uses the **Workspace** and **model override** from the sidebar. "
+        "After each task: extract unified diff → **git + gh PR** (or local **patch** only)."
+    )
+    st.text_area(
+        "Queue (tasks separated by ---)",
+        height=260,
+        key="queue_body",
+        placeholder="# First task\nDescribe the change…\n\n---\n\n# Second task\n…",
+    )
+    ex_path = _REPO / "scripts" / "queue.example.txt"
+    if st.button("Load example", key="queue_load_example"):
+        if ex_path.is_file():
+            st.session_state["queue_body"] = ex_path.read_text(encoding="utf-8", errors="replace")
+            st.rerun()
+        else:
+            st.warning("Example file missing — add `scripts/queue.example.txt` in the dev-agents repo.")
+    qcol1, qcol2, qcol3 = st.columns(3)
+    with qcol1:
+        q_rec = st.number_input("Recursion / task", 10, 200, 40, key="queue_rec_lim")
+        q_strip = st.number_input("patch -p", 0, 10, 1, key="queue_strip")
+    with qcol2:
+        q_sleep = st.number_input("Sleep (s) between tasks", 0.0, 3600.0, 0.0, 5.0, key="queue_sleep")
+        q_log = st.text_input(
+            "Log file (append)",
+            value=str(_REPO / "dev-agents-queue.log"),
+            key="queue_log_path",
+        )
+    with qcol3:
+        q_local = st.checkbox("Local patch only (no git/gh)", key="queue_local_only")
+        q_ff = st.checkbox("Fail fast", key="queue_fail_fast")
+        q_verbose = st.checkbox("Verbose (stderr trace)", key="queue_verbose")
+
+    c_save, c_run, c_bg = st.columns(3)
+    with c_save:
+        if st.button("Save queue to `queue.pending.txt`", key="queue_save_btn"):
+            qb = (st.session_state.get("queue_body") or "").strip()
+            if not qb:
+                st.error("Queue text is empty.")
+            else:
+                out_p = _REPO / "queue.pending.txt"
+                out_p.write_text(qb, encoding="utf-8")
+                st.success(f"Wrote `{out_p}`")
+    with c_run:
+        run_queue_clicked = st.button("Run queue here", type="primary", key="queue_run_blocking")
+    with c_bg:
+        bg_clicked = st.button("Start queue in background", key="queue_run_bg")
+
+    if run_queue_clicked:
+        from pathlib import Path as P
+
+        from dev_agents.queue_run import run_queue_from_text
+
+        qb = (st.session_state.get("queue_body") or "").strip()
+        ws = (workspace_abs or "").strip()
+        if not ws or not P(ws).is_dir():
+            st.error("Set a valid workspace root above.")
+        elif not qb:
+            st.error("Enter at least one task in the queue.")
+        else:
+            lp = Path((st.session_state.get("queue_log_path") or "").strip() or (_REPO / "dev-agents-queue.log"))
+            err_buf = io.StringIO()
+            with contextlib.redirect_stderr(err_buf):
+                code = run_queue_from_text(
+                    qb,
+                    log_path=lp,
+                    workspace=ws,
+                    workspace_index=None,
+                    model=_model_arg(),
+                    recursion_limit=int(q_rec),
+                    strip=int(q_strip),
+                    local_patch_only=bool(q_local),
+                    fail_fast=bool(q_ff),
+                    sleep=float(q_sleep),
+                    verbose=bool(q_verbose),
+                )
+            err_txt = err_buf.getvalue().strip()
+            st.session_state["queue_run_err"] = err_txt
+            st.session_state["queue_run_code"] = code
+            st.session_state["queue_run_log_path"] = str(lp)
+            if lp.is_file():
+                raw_log = lp.read_text(encoding="utf-8", errors="replace")
+                st.session_state["queue_run_tail"] = (
+                    raw_log[-120000:] if len(raw_log) > 120000 else raw_log
+                )
+            else:
+                st.session_state["queue_run_tail"] = ""
+
+    if "queue_run_code" in st.session_state:
+        code = st.session_state.get("queue_run_code")
+        lp_show = st.session_state.get("queue_run_log_path", "")
+        err_txt = (st.session_state.get("queue_run_err") or "").strip()
+        if err_txt:
+            with st.expander("Stderr (progress)", expanded=False):
+                st.code(err_txt, language="text")
+        tail = st.session_state.get("queue_run_tail") or ""
+        if tail:
+            st.text_area("Last run — log tail", value=tail, height=320, key="queue_out_tail")
+        if lp_show:
+            st.caption(f"Full log appends to `{lp_show}`")
+        if code == 0:
+            st.success("Last queue finished (exit 0).")
+        elif code == 2:
+            st.error("Last run: empty queue or invalid workspace (exit 2).")
+        elif code is not None:
+            st.warning(f"Last queue exit code: **{code}**")
+        if st.button("Clear queue output panel", key="queue_clear_output"):
+            for k in ("queue_run_tail", "queue_run_code", "queue_run_err", "queue_run_log_path"):
+                st.session_state.pop(k, None)
+            st.rerun()
+
+    if bg_clicked:
+        qb = (st.session_state.get("queue_body") or "").strip()
+        ws = (workspace_abs or "").strip()
+        lp = Path((st.session_state.get("queue_log_path") or "").strip() or (_REPO / "dev-agents-queue.log"))
+        if not ws or not Path(ws).is_dir():
+            st.error("Set a valid workspace root above.")
+        elif not qb:
+            st.error("Enter at least one task in the queue.")
+        else:
+            pending = _REPO / "queue.pending.txt"
+            pending.write_text(qb, encoding="utf-8")
+            venv_ag = _REPO / ".venv" / "bin" / "dev-agents"
+            exe = str(venv_ag) if venv_ag.is_file() else shutil.which("dev-agents") or ""
+            if not exe:
+                st.error("Could not find `dev-agents` CLI — run **`pip install -e .`** from this repo.")
+            else:
+                cmd = [
+                    exe,
+                    "queue",
+                    str(pending),
+                    "--log",
+                    str(lp),
+                    "-w",
+                    ws,
+                    "--recursion-limit",
+                    str(int(q_rec)),
+                    "-p",
+                    str(int(q_strip)),
+                    "--sleep",
+                    str(float(q_sleep)),
+                ]
+                mo = _model_arg()
+                if mo:
+                    cmd.extend(["-m", mo])
+                if q_local:
+                    cmd.append("--local-patch-only")
+                if q_ff:
+                    cmd.append("--fail-fast")
+                if q_verbose:
+                    cmd.append("--verbose")
+                out_append = _REPO / "overnight-nohup.out"
+                with open(out_append, "a", encoding="utf-8") as out_f:
+                    proc = subprocess.Popen(
+                        cmd,
+                        cwd=str(_REPO),
+                        env=os.environ.copy(),
+                        stdout=out_f,
+                        stderr=subprocess.STDOUT,
+                        start_new_session=True,
+                    )
+                pid_path = _REPO / "overnight-queue.pid"
+                pid_path.write_text(str(proc.pid), encoding="utf-8")
+                st.success(
+                    f"Started background PID **`{proc.pid}`**. "
+                    f"Logs append to **`{lp}`** · combined stdout/stderr **`{out_append}`**. "
+                    f"CLI equivalent saved at **`{pending}`**."
+                )

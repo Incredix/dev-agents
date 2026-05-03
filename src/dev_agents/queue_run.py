@@ -37,39 +37,27 @@ def _env_stash_default() -> bool:
     return True
 
 
-def run_queue(ns: Namespace) -> int:
-    """Execute ``queue`` CLI: run Coder for each task, then autopilot patch/PR."""
-    qpath = Path(ns.queue_file).expanduser()
-    if not qpath.is_file():
-        print(f"queue file not found: {qpath}", file=sys.stderr)
-        return 2
-    raw = qpath.read_text(encoding="utf-8", errors="replace")
-    tasks = parse_queue_text(raw)
-    if not tasks:
-        print("no tasks in queue file (non-empty blocks separated by --- on its own line)", file=sys.stderr)
-        return 2
-
-    root = resolve_workspace_root(ns.workspace, ns.workspace_index)
-    if root is None:
-        print(
-            "No workspace root: set AGENT_WORKSPACES or pass -w / --workspace-index",
-            file=sys.stderr,
-        )
-        return 2
-
-    log_path = Path(ns.log).expanduser() if ns.log else Path.cwd() / "dev-agents-queue.log"
-    local_only = bool(getattr(ns, "local_patch_only", False))
-    open_pr = not local_only
-
-    model = ns.model if getattr(ns, "model", None) else None
-    rec_lim = int(getattr(ns, "recursion_limit", 40) or 40)
-    strip = int(getattr(ns, "strip", 1) or 1)
-    fail_fast = bool(getattr(ns, "fail_fast", False))
-    sleep_s = float(getattr(ns, "sleep", 0) or 0)
-
+def _execute_queue_tasks(
+    tasks: list[str],
+    *,
+    root: Path,
+    log_path: Path,
+    model: str | None,
+    recursion_limit: int,
+    strip: int,
+    open_pr: bool,
+    fail_fast: bool,
+    sleep: float,
+    verbose: bool,
+) -> int:
     exit_status = 0
+    rec_lim = max(10, min(int(recursion_limit), 200))
+    sleep_s = float(sleep or 0)
     with log_path.open("a", encoding="utf-8") as log_fp:
-        hdr = f"\n{'#' * 70}\n# dev-agents queue start {datetime.now().isoformat()}\n# tasks={len(tasks)} workspace={root}\n"
+        hdr = (
+            f"\n{'#' * 70}\n# dev-agents queue start {datetime.now().isoformat()}\n"
+            f"# tasks={len(tasks)} workspace={root}\n"
+        )
         log_fp.write(hdr)
         log_fp.flush()
         print(hdr, end="", file=sys.stderr)
@@ -90,7 +78,7 @@ def run_queue(ns: Namespace) -> int:
                     thread_id=tid,
                     recursion_limit=rec_lim,
                     use_checkpoint=False,
-                    verbose=bool(getattr(ns, "verbose", False)),
+                    verbose=verbose,
                 )
             except Exception as e:  # noqa: BLE001
                 log_fp.write(f"CODER_ERROR: {e!r}\n")
@@ -149,3 +137,81 @@ def run_queue(ns: Namespace) -> int:
 
         log_fp.write(f"\n# queue end {datetime.now().isoformat()} exit={exit_status}\n")
     return exit_status
+
+
+def run_queue_from_text(
+    queue_text: str,
+    *,
+    log_path: Path | None = None,
+    workspace: str | None = None,
+    workspace_index: int | None = None,
+    model: str | None = None,
+    recursion_limit: int = 40,
+    strip: int = 1,
+    local_patch_only: bool = False,
+    fail_fast: bool = False,
+    sleep: float = 0.0,
+    verbose: bool = False,
+) -> int:
+    """Run the queue from raw text (Streamlit UI). Returns exit code style: 0 ok, 1 partial fail, 2 bad input."""
+    tasks = parse_queue_text(queue_text)
+    if not tasks:
+        return 2
+    root = resolve_workspace_root(workspace, workspace_index)
+    if root is None:
+        return 2
+    lp = Path(log_path).expanduser() if log_path else Path.cwd() / "dev-agents-queue.log"
+    return _execute_queue_tasks(
+        tasks,
+        root=root.resolve(),
+        log_path=lp,
+        model=model or None,
+        recursion_limit=recursion_limit,
+        strip=strip,
+        open_pr=not local_patch_only,
+        fail_fast=fail_fast,
+        sleep=sleep,
+        verbose=verbose,
+    )
+
+
+def run_queue(ns: Namespace) -> int:
+    """Execute ``queue`` CLI: run Coder for each task, then autopilot patch/PR."""
+    qpath = Path(ns.queue_file).expanduser()
+    if not qpath.is_file():
+        print(f"queue file not found: {qpath}", file=sys.stderr)
+        return 2
+    raw = qpath.read_text(encoding="utf-8", errors="replace")
+    tasks = parse_queue_text(raw)
+    if not tasks:
+        print(
+            "no tasks in queue file (non-empty blocks separated by --- on its own line)",
+            file=sys.stderr,
+        )
+        return 2
+
+    root = resolve_workspace_root(ns.workspace, ns.workspace_index)
+    if root is None:
+        print(
+            "No workspace root: set AGENT_WORKSPACES or pass -w / --workspace-index",
+            file=sys.stderr,
+        )
+        return 2
+
+    log_path = Path(ns.log).expanduser() if ns.log else Path.cwd() / "dev-agents-queue.log"
+    local_only = bool(getattr(ns, "local_patch_only", False))
+    m = getattr(ns, "model", None)
+    model = str(m).strip() if m else None
+
+    return _execute_queue_tasks(
+        tasks,
+        root=root.resolve(),
+        log_path=log_path,
+        model=model,
+        recursion_limit=int(getattr(ns, "recursion_limit", 40) or 40),
+        strip=int(getattr(ns, "strip", 1) or 1),
+        open_pr=not local_only,
+        fail_fast=bool(getattr(ns, "fail_fast", False)),
+        sleep=float(getattr(ns, "sleep", 0) or 0),
+        verbose=bool(getattr(ns, "verbose", False)),
+    )
