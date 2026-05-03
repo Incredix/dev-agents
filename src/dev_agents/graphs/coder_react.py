@@ -14,6 +14,7 @@ from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, SystemM
 from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
+from ollama import ResponseError
 
 from dev_agents.chat import make_chat_model
 from dev_agents.tools_workspace import build_workspace_tools
@@ -51,6 +52,28 @@ Respond with **only** one JSON object (no prose, no markdown fences, no `<tool_c
 - **max_lines** (int, optional)
 
 When you can answer from evidence, reply in **plain text** (no JSON). Tools are read-only. You may append a suggested ```diff```."""
+
+
+_EDGE_TIMEOUT_ASSISTANT_TEXT = """**HTTP gateway timeout (often Cloudflare 524)** — the Ollama HTTP response did not finish within the proxy’s limit (~**120s** on many zones). Large injected docs + a slow first token on a big model often triggers this.
+
+**Fix (pick one):**
+1. **Bypass the edge:** set `OLLAMA_BASE_URL` in `dev-agents/.env` to a **direct** Ollama URL your machine can use (e.g. LAN `http://192.168.x.x:11434`, Tailscale, VPN), then restart Streamlit — **not** the public hostname behind Cloudflare.
+2. **Smaller prompt:** lower `DEV_AGENTS_CODER_DOC_MAX_TOTAL` or shorten `DEV_AGENTS_CODER_DOC_PATHS`.
+3. **Faster / smaller model** (sidebar override) for a smoke test.
+4. **Zone owner:** raise origin/read timeouts or route `/api/*` outside the 120s cap (Cloudflare / tunnel settings).
+
+After changing `.env`, restart Streamlit and run Coder again."""
+
+
+def _is_edge_timeout_error(exc: BaseException) -> bool:
+    if isinstance(exc, ResponseError):
+        sc = int(getattr(exc, "status_code", -1) or -1)
+        if sc in (524, 504, 502, 408):
+            return True
+        blob = f"{getattr(exc, 'error', '')!s} {exc!s}"
+        if "524" in blob or "cloudflare" in blob.lower():
+            return True
+    return False
 
 
 def default_checkpoint_path() -> Path:
@@ -251,7 +274,12 @@ def run_coder(
         )
         msgs: list[AnyMessage] = [SystemMessage(ctx)]
         msgs.extend(state["messages"])
-        res = llm.invoke(msgs)
+        try:
+            res = llm.invoke(msgs)
+        except ResponseError as e:
+            if _is_edge_timeout_error(e):
+                return {"messages": [AIMessage(content=_EDGE_TIMEOUT_ASSISTANT_TEXT)]}
+            raise
         raw0 = res.content if isinstance(res.content, str) else str(res.content)
         # Ollama sometimes returns an empty string after tool rounds — one nudge retry.
         if (not raw0 or not str(raw0).strip()) and state.get("messages"):
@@ -262,7 +290,12 @@ def run_coder(
                     "(no JSON unless calling a tool)."
                 )
             ]
-            res = llm.invoke(retry_msgs)
+            try:
+                res = llm.invoke(retry_msgs)
+            except ResponseError as e:
+                if _is_edge_timeout_error(e):
+                    return {"messages": [AIMessage(content=_EDGE_TIMEOUT_ASSISTANT_TEXT)]}
+                raise
         return {"messages": [res]}
 
     def run_tool(state: CoderState) -> dict:
