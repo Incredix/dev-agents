@@ -17,13 +17,17 @@ from langgraph.graph.message import add_messages
 
 from dev_agents.chat import make_chat_model
 from dev_agents.tools_workspace import build_workspace_tools
+from dev_agents.workspace import build_coder_documentation_block
 
 
 _CODER_SYSTEM = """You are a coding assistant for **one** local git checkout. The workspace root is given below.
 
+## Documentation first (mandatory)
+When this prompt includes a **Repository documentation** section (excerpts from README, ARCHITECTURE, docs/, etc.), **read and follow it** before exploring files. It defines layout, stack, and terminology for this repo. If instructions conflict with a guess (e.g. `src/components`), **trust the documentation and the directory listing**.
+
 ## Discover before you guess
-1. **Always** start by listing the repo root: `{"name": "list_workspace_directory", "arguments": {"relative_path": "."}}`
-2. Do **not** assume a generic SPA layout (`src/components/...`) unless that folder appears in the listing. This workspace may be Django (`website/`, `tcp/`), a Vite app (`trades-ui/`), FastAPI (`backend/`), etc.
+1. **Ground truth:** Use the injected documentation section when present, **then** list the repo root: `{"name": "list_workspace_directory", "arguments": {"relative_path": "."}}` to confirm current paths.
+2. Do **not** assume a generic SPA layout (`src/components/...`) unless that folder appears in the listing or docs. This workspace may be Django (`website/`), a Vite app (`trades-ui/`), FastAPI (`backend/`), etc.
 3. Open files using paths that **exist** relative to the repo root (see tool errors — adjust and retry).
 
 ## How to call tools
@@ -221,11 +225,23 @@ def run_coder(
     tool_map = {getattr(t, "name", "?"): t for t in tools}
     llm = make_chat_model(**({"model": model} if model else {}))
 
+    doc_block = build_coder_documentation_block(workspace_root)
     ctx = (
         _CODER_SYSTEM
         + f"\n\nWorkspace root: {workspace_root.resolve()}\n"
         + f"Tool names: {', '.join(sorted(tool_map))}.\n"
     )
+    if doc_block:
+        ctx += (
+            "\n## Repository documentation (ingested from disk — read before exploring)\n\n"
+            + doc_block
+        )
+    else:
+        ctx += (
+            "\n## Repository documentation\n"
+            "_No standard doc files matched (README, docs/, ARCHITECTURE, …). "
+            "Use tools to find README and project docs, and `list_workspace_directory` on `.`._\n"
+        )
 
     def call_model(state: CoderState) -> dict:
         _emit_trace(
