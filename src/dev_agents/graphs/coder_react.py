@@ -19,23 +19,69 @@ from dev_agents.chat import make_chat_model
 from dev_agents.tools_workspace import build_workspace_tools
 
 
-_CODER_SYSTEM = """You are a coding assistant for a single local git checkout.
-You have tools: read_workspace_file, list_workspace_directory, grep_workspace, ripgrep_workspace.
+_CODER_SYSTEM = """You are a coding assistant for **one** local git checkout. The workspace root is given below.
 
-To call a tool, respond with ONLY valid JSON — one single object — and nothing before or after it (no prose, no markdown code fences, never XML-like tags such as <tool_call>):
-{"name": "<tool_name>", "arguments": {<argdict>}}
+## Discover before you guess
+1. **Always** start by listing the repo root: `{"name": "list_workspace_directory", "arguments": {"relative_path": "."}}`
+2. Do **not** assume a generic SPA layout (`src/components/...`) unless that folder appears in the listing. This workspace may be Django (`website/`, `tcp/`), a Vite app (`trades-ui/`), FastAPI (`backend/`), etc.
+3. Open files using paths that **exist** relative to the repo root (see tool errors — adjust and retry).
 
-Example:
-{"name": "list_workspace_directory", "arguments": {"relative_path": "."}}
+## How to call tools
+Respond with **only** one JSON object (no prose, no markdown fences, no `<tool_call>` XML):
+{"name": "<tool_name>", "arguments": {<exact keys below>}}
 
-When you have enough context to answer the user directly, reply with plain text (no JSON).
-Do not claim you edited files — tools are read-only. You may include a suggested ```diff``` at the end."""
+### read_workspace_file
+- **relative_path** (string): path under repo root, e.g. `website/views.py`
+
+### list_workspace_directory
+- **relative_path** (string): use `"."` for root, or a subdirectory name from a prior listing
+
+### grep_workspace (Python `re` regex; scans files)
+- **regex** (string): pattern
+- **glob_pattern** (string, optional): default `**/*.py`
+- **max_matches** (int, optional)
+
+### ripgrep_workspace (shell `rg`; faster when installed)
+- **pattern** (string): search text/pattern — required; **never** use the key `search_pattern`
+- **glob_pattern** (string, optional): one glob for `rg --glob`, default `*.py` — for TS/React try `*.{tsx,ts,jsx,js}` or `**/*`
+- **max_lines** (int, optional)
+
+When you can answer from evidence, reply in **plain text** (no JSON). Tools are read-only. You may append a suggested ```diff```."""
 
 
 def default_checkpoint_path() -> Path:
     raw = os.environ.get("DEV_AGENTS_CHECKPOINT_DB", ".checkpoints/checkpoints.sqlite")
     p = Path(raw).expanduser()
     return p if p.is_absolute() else (Path.cwd() / p)
+
+
+def _normalize_tool_arguments(tool_name: str, arguments: dict) -> dict:
+    """Map common mistaken keys from LLMs to the real StructuredTool parameter names."""
+    args = dict(arguments)
+    if tool_name == "ripgrep_workspace":
+        if "pattern" not in args and "search_pattern" in args:
+            args["pattern"] = args.pop("search_pattern")
+        if "glob_pattern" not in args and "file_patterns" in args:
+            fp = args.pop("file_patterns")
+            if isinstance(fp, str) and fp.strip():
+                # "a,b,c" or "*.js,*.tsx" → single rg --glob (first token or broad web glob)
+                low = fp.lower()
+                if any(x in low for x in (".tsx", ".jsx", ".ts", ".js", "react")):
+                    args["glob_pattern"] = "*.{tsx,ts,jsx,js}"
+                else:
+                    args["glob_pattern"] = fp.split(",")[0].strip()
+    elif tool_name == "grep_workspace":
+        if "regex" not in args and "search_pattern" in args:
+            args["regex"] = args.pop("search_pattern")
+        if "glob_pattern" not in args and "file_patterns" in args:
+            fp = args.pop("file_patterns")
+            if isinstance(fp, str) and fp.strip():
+                low = fp.lower()
+                if any(x in low for x in (".tsx", ".jsx", ".ts", ".js")):
+                    args["glob_pattern"] = "**/*.{tsx,ts,jsx,js}"
+                else:
+                    args["glob_pattern"] = fp.split(",")[0].strip()
+    return args
 
 
 def _parse_tool_json(content: str) -> tuple[str, dict] | None:
@@ -212,6 +258,7 @@ def run_coder(
         if not parsed:
             return {"messages": []}
         name, args = parsed
+        args = _normalize_tool_arguments(name, args)
         tool = tool_map.get(name)
         if tool is None:
             return {
