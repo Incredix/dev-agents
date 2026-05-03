@@ -182,6 +182,11 @@ def run_coder(
     )
 
     def call_model(state: CoderState) -> dict:
+        _emit_trace(
+            verbose,
+            step_log,
+            "call_model: invoking Ollama (single blocking HTTP call — no further UI steps until this returns)",
+        )
         msgs: list[AnyMessage] = [SystemMessage(ctx)]
         msgs.extend(state["messages"])
         res = llm.invoke(msgs)

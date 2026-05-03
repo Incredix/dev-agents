@@ -15,6 +15,7 @@ from __future__ import annotations
 import contextlib
 import io
 import os
+import uuid
 from pathlib import Path
 
 _REPO = Path(__file__).resolve().parent.parent
@@ -35,7 +36,8 @@ def _load_repo_dotenv() -> None:
         return
     env_path = _REPO / ".env"
     if env_path.is_file():
-        load_dotenv(env_path, override=False)
+        # Repo `.env` should win over stray shell exports (stale OLLAMA_* breaks model list).
+        load_dotenv(env_path, override=True)
 
 
 def _agent_workspaces_raw_from_dotenv_file() -> str:
@@ -256,6 +258,63 @@ _load_repo_dotenv()
 
 import streamlit as st  # noqa: E402
 
+MODEL_OVERRIDE_USE_ENV = "— use default (OLLAMA_MODEL) —"
+
+
+def _ollama_base_normalized() -> str:
+    return (os.environ.get("OLLAMA_BASE_URL") or "http://127.0.0.1:11434").rstrip("/")
+
+
+def _extra_model_names_from_env() -> list[str]:
+    """Optional comma-separated favorites from ``OLLAMA_EXTRA_MODELS`` (always shown in dropdown)."""
+    raw = os.environ.get("OLLAMA_EXTRA_MODELS", "").strip()
+    if not raw:
+        return []
+    return sorted({p.strip() for p in raw.split(",") if p.strip()})
+
+
+def _fetch_ollama_model_names() -> list[str]:
+    """Names from ``GET /api/tags`` for the configured ``OLLAMA_BASE_URL``."""
+    import json as _json
+    import urllib.error as _ue
+    import urllib.request as _ur
+
+    base = _ollama_base_normalized()
+    url = f"{base}/api/tags"
+    req = _ur.Request(url, headers={"Accept": "application/json"})
+    try:
+        with _ur.urlopen(req, timeout=6.0) as resp:
+            raw = resp.read().decode("utf-8", errors="replace")
+        data = _json.loads(raw)
+        models = data.get("models") or []
+        names = [m.get("name") for m in models if isinstance(m, dict) and m.get("name")]
+        return sorted(set(names))
+    except (_ue.URLError, _ue.HTTPError, TimeoutError, OSError, ValueError, TypeError):
+        return []
+
+
+def _model_override_options() -> tuple[list[str], list[str]]:
+    """Return (selectbox_options, tag_names_from_server)."""
+    env_default = (os.environ.get("OLLAMA_MODEL") or "qwen2.5-coder:32b").strip()
+    base = _ollama_base_normalized()
+    cached_base = st.session_state.get("ollama_tags_cached_base")
+    if (
+        "ollama_tag_names" not in st.session_state
+        or cached_base != base
+    ):
+        st.session_state["ollama_tag_names"] = _fetch_ollama_model_names()
+        st.session_state["ollama_tags_cached_base"] = base
+    tags = list(st.session_state.get("ollama_tag_names") or [])
+    extras = _extra_model_names_from_env()
+    merged = sorted(
+        set(tags)
+        | ({env_default} if env_default else set())
+        | set(extras),
+    )
+    opts = [MODEL_OVERRIDE_USE_ENV] + merged
+    return opts, tags
+
+
 st.set_page_config(page_title="dev-agents", layout="wide")
 if "last_coder_reply" not in st.session_state:
     st.session_state["last_coder_reply"] = ""
@@ -344,7 +403,30 @@ with st.sidebar:
         disabled=True,
     )
     st.text_input("OLLAMA_MODEL (from env)", value=model_env, disabled=True)
-    model_ov = st.text_input("Per-run model override (optional)", value="", placeholder="e.g. qwen2.5-coder:32b")
+    ov_opts, _ov_tags = _model_override_options()
+    st.selectbox(
+        "Per-run model override",
+        options=ov_opts,
+        index=0,
+        key="model_override_select",
+        help=(
+            "Combines `/api/tags` from **OLLAMA_BASE_URL**, **OLLAMA_MODEL**, and optional **OLLAMA_EXTRA_MODELS**. "
+            "If you only see wrong models, your URL may still point at another host (e.g. local Docker)."
+        ),
+    )
+    st.caption(
+        f"Tags above come from **`{_mask_url(_ollama_base_normalized())}`** "
+        f"({len(_ov_tags)} from server). "
+        f"Override `.env` **`OLLAMA_BASE_URL`** to the machine that has **qwen/gemma**, then **Refresh**."
+    )
+    if st.button("Refresh model list", key="ollama_tags_refresh", help="Re-fetch `/api/tags`"):
+        st.session_state["ollama_tag_names"] = _fetch_ollama_model_names()
+        st.session_state["ollama_tags_cached_base"] = _ollama_base_normalized()
+        st.rerun()
+    if not _ov_tags:
+        st.caption(
+            "Could not reach Ollama `/api/tags` — dropdown shows **OLLAMA_MODEL** + **OLLAMA_EXTRA_MODELS** only."
+        )
     st.subheader("Autopilot")
     full_autopilot = _env_enabled("DEV_AGENTS_AUTOPILOT", default=True)
     if full_autopilot:
@@ -518,8 +600,11 @@ tabs = st.tabs(["Ollama check", "Hello", "Plan", "Coder", "Patch & PR"])
 
 
 def _model_arg() -> str | None:
-    m = model_ov.strip() if isinstance(model_ov, str) else ""
-    return m or None
+    sel = st.session_state.get("model_override_select")
+    if sel is None or sel == MODEL_OVERRIDE_USE_ENV:
+        return None
+    s = str(sel).strip()
+    return s or None
 
 
 with tabs[0]:
@@ -575,6 +660,16 @@ with tabs[3]:
         rec_lim = st.number_input("Recursion limit", min_value=10, max_value=200, value=40)
     with col_b:
         thread_id = st.text_input("Thread id", value="streamlit")
+    fresh_coder_thread = st.checkbox(
+        "Fresh thread each run",
+        value=True,
+        key="coder_fresh_thread",
+        help=(
+            "LangGraph SQLite checkpoints key by thread id. With the same id, every Run **appends** "
+            "to the prior conversation — the model still sees old instructions (e.g. an earlier SPX vs SPY ask). "
+            "Turn this on for a new checkpoint thread each run; turn off only to **continue** one long session."
+        ),
+    )
     no_ckpt = st.checkbox("No SQLite checkpoint (--no-checkpoint)", value=False)
     coder_verbose = st.checkbox(
         "Verbose step log (model/tool previews)",
@@ -607,11 +702,19 @@ with tabs[3]:
         elif not (instr_c or "").strip():
             st.error("Enter a **Coder instruction** (empty instructions often yield no visible reply).")
         else:
+            base_tid = (thread_id or "streamlit").strip() or "streamlit"
+            effective_thread_id = (
+                f"{base_tid}-{uuid.uuid4().hex[:12]}"
+                if fresh_coder_thread
+                else base_tid
+            )
+            if fresh_coder_thread:
+                st.caption(f"Checkpoint thread for this run: `{effective_thread_id}`")
 
             def _coder_kwargs(on_step_cb=None):
                 kw = dict(
                     model=_model_arg(),
-                    thread_id=thread_id or "streamlit",
+                    thread_id=effective_thread_id,
                     recursion_limit=int(rec_lim),
                     use_checkpoint=not no_ckpt,
                     step_log=steps if coder_verbose else None,
@@ -623,9 +726,13 @@ with tabs[3]:
             steps: list[str] = []
             txt = ""
             spinner_msg = (
-                "**Behind the scenes:** LangGraph cycles **call_model → (optional) tools → model** …"
-                "\nEach **step** below is one superstep (`model` node or `tools` node)."
-                "\nInside **call_model**, Ollama runs **blocking** until a response — longest silent gap."
+                "**Why it can look frozen:** After you see your **`user:`** line, the next log line only appears "
+                "when **Ollama finishes the whole model turn**. There is **no** token-by-token progress in this UI.\n\n"
+                "**Large / remote models are slow:** e.g. **`gemma4:31b`** over **`OLLAMA_BASE_URL`** can take "
+                "**several minutes** (cold load, queue, network). That silence is normal — not a stuck checkpoint.\n\n"
+                "**Quick checks:** **Ollama check** tab → `/api/tags`; sidebar **Per-run model override** with a "
+                "smaller tag for a fast sanity test; optional **`OLLAMA_TIMEOUT`** in `.env` (seconds) if you want "
+                "requests to fail instead of hanging forever."
             )
             try:
                 if coder_live:
