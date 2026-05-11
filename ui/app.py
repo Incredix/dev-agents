@@ -15,6 +15,7 @@ from __future__ import annotations
 import contextlib
 import io
 import os
+import shlex
 import shutil
 import subprocess
 import threading
@@ -600,7 +601,9 @@ with st.expander("Workspace maps — overview & shallow trees", expanded=False):
                 )
                 st.code(body, language="text")
 
-tabs = st.tabs(["Ollama check", "Hello", "Plan", "Coder", "Patch & PR", "Queue"])
+tabs = st.tabs(
+    ["Ollama check", "Hello", "Plan", "Coder", "Patch & PR", "Queue", "Aider overnight"]
+)
 
 
 def _model_arg() -> str | None:
@@ -986,7 +989,23 @@ with tabs[5]:
         "Run **multiple** Coder tasks in order (like `dev-agents queue`). "
         "Separate each task with a line that contains only **`---`**. "
         "Uses the **Workspace** and **model override** from the sidebar. "
-        "After each task: extract unified diff → **git + gh PR** (or local **patch** only)."
+        "After each task: extract unified diff → **git + gh PR** (or local **patch** only). "
+        "If the first reply has **no** parseable diff, the runner sends **one** automatic follow-up asking for a diff "
+        "(unless you opted out with phrases like *read-only* / *analysis only*, or the model says `NO_CODE_CHANGE:`). "
+        "Set **`DEV_AGENTS_QUEUE_DIFF_RETRY=0`** to disable."
+    )
+    st.text_area(
+        "Prefix every task (optional)",
+        height=120,
+        key="queue_task_prefix",
+        placeholder=(
+            "Stack hint repeated before each --- block, e.g.\n"
+            "Workspace is TradeChef Django tcp (website/, trades-ui/). …"
+        ),
+        help=(
+            "Prepended to each task’s instruction for this run only. "
+            "Leave empty for no prefix (CLI/overnight runs can use DEV_AGENTS_QUEUE_TASK_PREFIX)."
+        ),
     )
     st.text_area(
         "Queue (tasks separated by ---)",
@@ -1061,6 +1080,7 @@ with tabs[5]:
                         fail_fast=bool(q_ff),
                         sleep=float(q_sleep),
                         verbose=bool(q_verbose),
+                        task_prefix=st.session_state.get("queue_task_prefix", ""),
                     )
                 except Exception as e:  # noqa: BLE001
                     holder["exc"] = e
@@ -1169,6 +1189,12 @@ with tabs[5]:
                 mo = _model_arg()
                 if mo:
                     cmd.extend(["-m", mo])
+                env_bg = os.environ.copy()
+                qp_bg = (st.session_state.get("queue_task_prefix") or "").strip()
+                if qp_bg:
+                    env_bg["DEV_AGENTS_QUEUE_TASK_PREFIX"] = qp_bg
+                else:
+                    env_bg.pop("DEV_AGENTS_QUEUE_TASK_PREFIX", None)
                 if q_local:
                     cmd.append("--local-patch-only")
                 if q_ff:
@@ -1180,7 +1206,7 @@ with tabs[5]:
                     proc = subprocess.Popen(
                         cmd,
                         cwd=str(_REPO),
-                        env=os.environ.copy(),
+                        env=env_bg,
                         stdout=out_f,
                         stderr=subprocess.STDOUT,
                         start_new_session=True,
@@ -1192,3 +1218,171 @@ with tabs[5]:
                     f"Logs append to **`{lp}`** · combined stdout/stderr **`{out_append}`**. "
                     f"CLI equivalent saved at **`{pending}`**."
                 )
+
+with tabs[6]:
+    st.markdown(
+        "**TradeChefPro Aider** — uses the **workspace root** above (your **`tcp`** checkout). "
+        "Edit **`aider/TASKS.md`**, tail **`aider/logs/*`**, start **`./aider/overnight.sh`** in a detached process "
+        "(same as non-interactive SSH: full loop runs in the child until the queue is empty). "
+        "Requires **`aider`** on **`PATH`** in that environment (e.g. `~/.local/bin`)."
+    )
+    ws_a = (workspace_abs or "").strip()
+    root_a = Path(ws_a) if ws_a else None
+    if not root_a or not root_a.is_dir():
+        st.error("Set a valid **workspace root** above.")
+    else:
+        aider_sh = root_a / "aider" / "overnight.sh"
+        tasks_md = root_a / "aider" / "TASKS.md"
+        logs_dir = root_a / "aider" / "logs"
+        if not aider_sh.is_file():
+            st.info(
+                f"No **`aider/overnight.sh`** under `{root_a}`. "
+                "Point the workspace at a **tcp** clone (or any repo that ships the Aider automation folder)."
+            )
+        else:
+            logs_dir.mkdir(parents=True, exist_ok=True)
+            prev_ws = st.session_state.get("aider_overnight_ws")
+            if prev_ws != ws_a:
+                st.session_state["aider_overnight_ws"] = ws_a
+                if tasks_md.is_file():
+                    st.session_state["aider_tasks_draft"] = tasks_md.read_text(
+                        encoding="utf-8", errors="replace"
+                    )
+                else:
+                    st.session_state["aider_tasks_draft"] = (
+                        "# Aider overnight task queue\n\n"
+                        "# Add tasks per aider/README.md (single lines or --- #N --- blocks).\n"
+                    )
+
+            st.subheader("TASKS.md")
+            c1, c2, c3 = st.columns(3)
+            with c1:
+                if st.button("Reload from disk", key="aider_tasks_reload"):
+                    if tasks_md.is_file():
+                        st.session_state["aider_tasks_draft"] = tasks_md.read_text(
+                            encoding="utf-8", errors="replace"
+                        )
+                        st.success("Reloaded.")
+                    else:
+                        st.warning("File does not exist yet — edit below and Save.")
+                    st.rerun()
+            with c2:
+                if st.button("Save to disk", type="primary", key="aider_tasks_save"):
+                    try:
+                        tasks_md.parent.mkdir(parents=True, exist_ok=True)
+                        tasks_md.write_text(
+                            str(st.session_state.get("aider_tasks_draft") or ""),
+                            encoding="utf-8",
+                        )
+                        st.success(f"Wrote `{tasks_md}`")
+                    except OSError as e:
+                        st.error(f"Write failed: {e}")
+            with c3:
+                st.caption(f"`{tasks_md}`")
+
+            st.text_area(
+                "TASKS.md body",
+                height=320,
+                key="aider_tasks_draft",
+                label_visibility="collapsed",
+                placeholder="--- #42 ---\nYour task…",
+            )
+
+            st.subheader("Overnight run")
+            dev_plan = st.checkbox(
+                "Prepend **dev-agents plan** to each Aider task (`AIDER_OVERNIGHT_DEV_AGENTS=1`)",
+                value=False,
+                key="aider_ui_dev_agents_plan",
+                help="Requires **dev-agents** `.venv` next to tcp or `DEV_AGENTS_BIN`; see tcp `aider/overnight.sh`.",
+            )
+            spawn_log = logs_dir / "overnight-ui-spawn.log"
+            spawn_pid_path = logs_dir / "overnight-ui.pid"
+            if st.button("Start overnight (detached)", type="primary", key="aider_spawn_overnight"):
+                env_a = os.environ.copy()
+                env_a["PATH"] = f"{Path.home()}/.local/bin{os.pathsep}{env_a.get('PATH', '')}"
+                if dev_plan:
+                    env_a["AIDER_OVERNIGHT_DEV_AGENTS"] = "1"
+                else:
+                    env_a.pop("AIDER_OVERNIGHT_DEV_AGENTS", None)
+                dg_root = root_a.parent / "dev-agents"
+                if dg_root.is_dir():
+                    env_a.setdefault("DEV_AGENTS_ROOT", str(dg_root.resolve()))
+                inner = (
+                    f"cd {shlex.quote(str(root_a.resolve()))} && "
+                    "exec ./aider/overnight.sh"
+                )
+                cmd_a = ["bash", "-lc", inner]
+                try:
+                    with open(spawn_log, "ab", buffering=0) as lf:
+                        lf.write(
+                            f"\n# dev-agents UI spawn {time.strftime('%Y-%m-%dT%H:%M:%S')}\n".encode()
+                        )
+                        lf.flush()
+                        proc_a = subprocess.Popen(
+                            cmd_a,
+                            stdin=subprocess.DEVNULL,
+                            stdout=lf,
+                            stderr=subprocess.STDOUT,
+                            env=env_a,
+                            start_new_session=True,
+                        )
+                    spawn_pid_path.write_text(str(proc_a.pid), encoding="utf-8")
+                    st.success(
+                        f"Started **overnight** PID **`{proc_a.pid}`**. "
+                        f"Stream: `{spawn_log}` · PID file: `{spawn_pid_path}`"
+                    )
+                except OSError as e:
+                    st.error(f"Could not start: {e}")
+
+            if spawn_pid_path.is_file():
+                try:
+                    pid_txt = spawn_pid_path.read_text(encoding="utf-8", errors="replace").strip()
+                    pid_a = int(pid_txt.split()[0])
+                    alive = False
+                    try:
+                        os.kill(pid_a, 0)
+                        alive = True
+                    except OSError:
+                        alive = False
+                    st.caption(
+                        f"Last UI-spawn PID **{pid_a}** — "
+                        f"{'**running** (or stale PID if process exited)' if alive else 'not running (exited or unknown)'}"
+                    )
+                except (ValueError, OSError):
+                    st.caption(f"PID file: `{spawn_pid_path}`")
+
+            st.subheader("Logs (tail)")
+            tail_bytes = st.number_input(
+                "Tail (bytes)",
+                min_value=4000,
+                max_value=900_000,
+                value=120_000,
+                step=4000,
+                key="aider_log_tail_bytes",
+            )
+            log_choice = st.selectbox(
+                "Log file",
+                options=[
+                    "overnight.log",
+                    "overnight.nohup.log",
+                    "completed.log",
+                    "failed.log",
+                    "last-test-output.log",
+                    "overnight-ui-spawn.log",
+                ],
+                index=0,
+                key="aider_log_pick",
+            )
+            log_path = logs_dir / log_choice
+            if st.button("Refresh log view", key="aider_log_refresh"):
+                st.session_state["aider_log_tick"] = time.time()
+            if log_path.is_file():
+                try:
+                    raw_l = log_path.read_bytes()
+                    cap = int(tail_bytes)
+                    chunk = raw_l[-cap:] if len(raw_l) > cap else raw_l
+                    st.code(chunk.decode("utf-8", errors="replace"), language="text")
+                except OSError as e:
+                    st.warning(f"Could not read log: {e}")
+            else:
+                st.caption(f"`{log_path}` — not created yet.")

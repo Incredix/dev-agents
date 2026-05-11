@@ -31,9 +31,11 @@ Opens **`http://localhost:8501`** — Streamlit listens on **localhost** only by
 kill "$(lsof -ti :8501)"
 ```
 
-Then start again (same venv + **`python -m streamlit`** — see **`ui/app.py`** docstring). **Tabs:** Ollama check · Hello · Plan · **Coder** · **Patch & PR**. The app loads **`dev-agents/.env`** with **python-dotenv** (still never commit `.env`). In **Coder**, enable **“Verbose step log”** for a LangGraph step trace after the run; enable **“Show live progress”** for **`st.status`** step lines (needs Streamlit ≥ 1.33).
+Then start again (same venv + **`python -m streamlit`** — see **`ui/app.py`** docstring). **Tabs:** Ollama check · Hello · Plan · **Coder** · **Patch & PR** · Queue · **Aider overnight**. The app loads **`dev-agents/.env`** with **python-dotenv** (still never commit `.env`). In **Coder**, enable **“Verbose step log”** for a LangGraph step trace after the run; enable **“Show live progress”** for **`st.status`** step lines (needs Streamlit ≥ 1.33).
 
 **Workspace picker:** when **`AGENT_WORKSPACES`** lists multiple paths, the UI can **auto-pick** a checkout from keywords in Plan/Coder text (toggle in the main column). Override with **Workspace root** if needed — wrong root → grep/list hits the wrong repo.
+
+**Aider overnight tab (TradeChefPro `tcp`):** with the workspace set to your **`tcp`** clone, edit **`aider/TASKS.md`**, tail **`aider/logs/*.log`**, and **Start overnight** to run **`./aider/overnight.sh`** detached (stdout/stderr append to **`aider/logs/overnight-ui-spawn.log`**). Optional checkbox sets **`AIDER_OVERNIGHT_DEV_AGENTS=1`** and **`DEV_AGENTS_ROOT`** to this repo’s sibling **`dev-agents`** when present (same machine layout as `…/tradechefpro/tcp` + `…/tradechefpro/dev-agents`).
 
 ### Patch & PR tab
 
