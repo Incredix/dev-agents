@@ -1291,9 +1291,9 @@ with tabs[6]:
             st.subheader("Overnight run")
             dev_plan = st.checkbox(
                 "Prepend **dev-agents plan** to each Aider task (`AIDER_OVERNIGHT_DEV_AGENTS=1`)",
-                value=False,
+                value=True,
                 key="aider_ui_dev_agents_plan",
-                help="Requires **dev-agents** `.venv` next to tcp or `DEV_AGENTS_BIN`; see tcp `aider/overnight.sh`.",
+                help="Matches tcp overnight default. Uncheck to force **`AIDER_OVERNIGHT_DEV_AGENTS=0`** for this spawn. Requires **dev-agents** `.venv` next to tcp or **`DEV_AGENTS_BIN`**.",
             )
             spawn_log = logs_dir / "overnight-ui-spawn.log"
             spawn_pid_path = logs_dir / "overnight-ui.pid"
@@ -1303,7 +1303,7 @@ with tabs[6]:
                 if dev_plan:
                     env_a["AIDER_OVERNIGHT_DEV_AGENTS"] = "1"
                 else:
-                    env_a.pop("AIDER_OVERNIGHT_DEV_AGENTS", None)
+                    env_a["AIDER_OVERNIGHT_DEV_AGENTS"] = "0" 
                 dg_root = root_a.parent / "dev-agents"
                 if dg_root.is_dir():
                     env_a.setdefault("DEV_AGENTS_ROOT", str(dg_root.resolve()))
